@@ -3,8 +3,21 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from '../supabase';
 
-const LANGS = ['', 'Tamil', 'Telugu', 'Hindi', 'Malayalam', 'Kannada', 'English'];
+const LANGS = ['All', 'Tamil', 'Telugu', 'Hindi', 'Malayalam', 'Kannada', 'English'];
 const FMT_ORDER = ['4K', '2K', '1080p', '720p', '480p', 'BluRay', 'WEB-DL', 'HD', 'TC', 'CAM'];
+
+const THEME = {
+  bg:      '#0d1117',
+  surface: '#161b22',
+  surface2:'#1c2128',
+  border:  '#30363d',
+  text:    '#e6edf3',
+  muted:   '#7d8590',
+  accent:  '#22d3ee',
+  accentDim:'rgba(34,211,238,0.12)',
+};
+
+const PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 44 66'%3E%3Crect fill='%231c2128' width='44' height='66'/%3E%3C/svg%3E";
 
 function bestFormat(dls) {
   if (!Array.isArray(dls) || !dls.length) return null;
@@ -13,10 +26,10 @@ function bestFormat(dls) {
   return dls[0]?.format || dls[0]?.tier || null;
 }
 
-function fmtColor(f) {
-  if (f === '4K' || f === '2K') return { bg: 'rgba(234,179,8,.85)', color: '#0a0a0c' };
-  if (f === 'CAM' || f === 'TC') return { bg: 'rgba(239,68,68,.85)', color: '#fff' };
-  return { bg: 'rgba(34,197,94,.85)', color: '#0a0a0c' };
+function fmtStyle(f) {
+  if (f === '4K' || f === '2K') return { bg: 'rgba(234,179,8,0.18)', color: '#fbbf24', border: 'rgba(234,179,8,0.4)' };
+  if (f === 'CAM' || f === 'TC') return { bg: 'rgba(239,68,68,0.18)', color: '#f87171', border: 'rgba(239,68,68,0.4)' };
+  return { bg: 'rgba(34,197,94,0.18)', color: '#4ade80', border: 'rgba(34,197,94,0.4)' };
 }
 
 export default function MovieGrid() {
@@ -30,11 +43,11 @@ export default function MovieGrid() {
     setLoading(true);
 
     let req = supabase
-  .from('movies')
-  .select('id,title,year,poster_url,languages,downloads,created_at')
-  .eq('published', true)
-  .order('created_at', { ascending: false })
-  .limit(180);
+      .from('movies')
+      .select('id,title,year,poster_url,languages,downloads,created_at')
+      .eq('published', true)
+      .order('created_at', { ascending: false })
+      .limit(100);
 
     if (q.trim()) req = req.ilike('title', `%${q.trim()}%`);
     if (lang) req = req.contains('languages', [lang]);
@@ -48,102 +61,116 @@ export default function MovieGrid() {
     return () => { cancelled = true; };
   }, [q, lang]);
 
+  const rows = [];
+  movies.forEach((m, i) => {
+    if (i > 0 && i % 10 === 0) rows.push(<AdRow key={`ad-${i}`} />);
+    rows.push(<MovieRow key={m.id} movie={m} />);
+  });
+
   return (
-    <div style={{ maxWidth: 1600, margin: '0 auto', padding: '24px 20px 48px', color: '#f0f0f2' }}>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 24, alignItems: 'center' }}>
-        {LANGS.map(l => (
-          <button key={l || 'all'} onClick={() => setLang(l)}
-                  style={{
-                    padding: '7px 16px', borderRadius: 24, cursor: 'pointer',
-                    border: `1px solid ${lang === l ? '#ff6b1a' : '#26262c'}`,
-                    background: lang === l ? '#ff6b1a' : '#141418',
-                    color: lang === l ? '#0a0a0c' : '#f0f0f2',
-                    fontSize: 13, fontWeight: lang === l ? 600 : 400,
-                  }}>
-            {l || 'All'}
-          </button>
-        ))}
-        <input
-          placeholder="Search movies..."
-          value={q}
-          onChange={e => setQ(e.target.value)}
-          style={{
-            flex: 1, minWidth: 200, maxWidth: 320, padding: '8px 14px',
-            borderRadius: 24, border: '1px solid #26262c', background: '#141418',
-            color: '#f0f0f2', fontSize: 13, marginLeft: 'auto',
-          }}
-        />
+    <div style={{ maxWidth: 1000, margin: '0 auto', padding: '16px 12px 48px', background: THEME.bg, color: THEME.text, minHeight: '100vh' }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+        {LANGS.map(l => {
+          const v = l === 'All' ? '' : l;
+          const active = lang === v;
+          return (
+            <button key={l} onClick={() => setLang(v)} style={{
+              padding: '8px 16px',
+              borderRadius: 8,
+              border: `1px solid ${active ? THEME.accent : THEME.border}`,
+              background: active ? THEME.accent : THEME.surface,
+              color: active ? '#0d1117' : THEME.text,
+              fontSize: 13,
+              fontWeight: active ? 700 : 500,
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+              fontFamily: 'inherit',
+            }}>{l}</button>
+          );
+        })}
       </div>
 
+      <input
+        placeholder="Search movies..."
+        value={q}
+        onChange={e => setQ(e.target.value)}
+        style={{
+          width: '100%', padding: '10px 14px', borderRadius: 8,
+          border: `1px solid ${THEME.border}`, background: THEME.surface,
+          color: THEME.text, fontSize: 14, marginBottom: 14, boxSizing: 'border-box',
+          fontFamily: 'inherit',
+        }}
+      />
+
       {loading ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 20 }}>
-          {Array.from({ length: 12 }).map((_, i) => (
-            <div key={i} style={{ aspectRatio: '2/3', borderRadius: 12, background: '#1b1b20' }} />
-          ))}
-        </div>
+        <div style={{ padding: 60, textAlign: 'center', color: THEME.muted }}>Loading...</div>
       ) : !movies.length ? (
-        <div style={{ textAlign: 'center', padding: '80px 20px', opacity: 0.6 }}>
-          <strong style={{ display: 'block', fontSize: 17, color: '#f0f0f2', marginBottom: 6, opacity: 1 }}>
-            No movies yet
-          </strong>
+        <div style={{ padding: 60, textAlign: 'center', color: THEME.muted }}>
+          <strong style={{ display: 'block', fontSize: 16, color: THEME.text, marginBottom: 6 }}>No movies yet</strong>
           Scraper runs every 6 hours.
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 20 }}>
-          {movies.map((m, i) => {
-            const fmt = bestFormat(m.downloads);
-            const fc = fmt ? fmtColor(fmt) : null;
-            return (
-              <Link key={m.id} to={`/movies/${m.id}`}
-                    style={{
-                      textDecoration: 'none', color: 'inherit', display: 'block',
-                      background: '#141418', borderRadius: 12, overflow: 'hidden',
-                      transition: 'transform .2s, box-shadow .2s',
-                    }}>
-                <div style={{ position: 'relative', aspectRatio: '2/3', background: '#1b1b20', overflow: 'hidden' }}>
-                  <div style={{ position: 'absolute', top: 8, left: 8, right: 8, display: 'flex', gap: 4, flexWrap: 'wrap', zIndex: 2 }}>
-                    {fmt && (
-                      <span style={{
-                        fontSize: 10, fontWeight: 800, padding: '3px 7px', borderRadius: 4,
-                        background: fc.bg, color: fc.color, textTransform: 'uppercase', letterSpacing: 0.3,
-                      }}>{fmt}</span>
-                    )}
-                    {(m.languages || []).slice(0, 2).map(l => (
-                      <span key={l} style={{
-                        fontSize: 10, fontWeight: 800, padding: '3px 7px', borderRadius: 4,
-                        background: 'rgba(10,10,12,.85)', color: '#ff6b1a',
-                        border: '1px solid rgba(255,107,26,.45)', textTransform: 'uppercase', letterSpacing: 0.3,
-                      }}>{l}</span>
-                    ))}
-                  </div>
-                  {m.poster_url ? (
-                    <img src={m.poster_url} alt={m.title} loading={i < 12 ? 'eager' : 'lazy'}
-                         referrerPolicy="no-referrer"
-                         style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-                  ) : (
-                    <div style={{ width: '100%', height: '100%', display: 'flex',
-                                  alignItems: 'center', justifyContent: 'center', opacity: 0.2, fontSize: 12 }}>
-                      No poster
-                    </div>
-                  )}
-                </div>
-                <div style={{ padding: '12px 14px' }}>
-                  <div style={{
-                    fontSize: 13, fontWeight: 600, lineHeight: 1.4,
-                    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
-                    overflow: 'hidden', minHeight: 36,
-                  }}>{m.title}</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between',
-                                marginTop: 6, fontSize: 12, color: '#8a8a92' }}>
-                    <span>{m.year || '—'}</span>
-                    {fmt && <span style={{ color: '#ff6b1a', fontWeight: 700 }}>{fmt}</span>}
-                  </div>
-                </div>
-              </Link>
-            );
-          })}
-        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>{rows}</div>
       )}
     </div>
+  );
+}
+
+function MovieRow({ movie }) {
+  const fmt = bestFormat(movie.downloads);
+  const fs = fmt ? fmtStyle(fmt) : null;
+  const langs = (movie.languages || []).slice(0, 4);
+  const dlCount = (movie.downloads || []).length;
+
+  return (
+    <Link to={`/movies/${movie.id}`} style={{
+      display: 'grid',
+      gridTemplateColumns: '44px 1fr auto',
+      gap: 12, alignItems: 'center',
+      padding: 10,
+      background: THEME.surface,
+      border: `1px solid ${THEME.border}`,
+      borderRadius: 8,
+      textDecoration: 'none', color: 'inherit',
+      transition: 'border-color 0.15s, background 0.15s',
+    }}>
+      <img
+        src={movie.poster_url || PLACEHOLDER}
+        alt=""
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={e => { e.currentTarget.src = PLACEHOLDER; e.currentTarget.onerror = null; }}
+        style={{ width: 44, height: 66, objectFit: 'cover', borderRadius: 4, background: THEME.surface2 }}
+      />
+      <div style={{ minWidth: 0 }}>
+        <div style={{
+          fontSize: 14, fontWeight: 600, color: THEME.text, lineHeight: 1.35, marginBottom: 4,
+          overflow: 'hidden', textOverflow: 'ellipsis',
+          display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+        }}>{movie.title}</div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: 11, color: THEME.muted }}>
+          {movie.year && <span>{movie.year}</span>}
+          {langs.length > 0 && <span>·</span>}
+          {langs.map(l => <span key={l} style={{ color: THEME.accent }}>{l}</span>)}
+          {dlCount > 0 && <span>· {dlCount} links</span>}
+        </div>
+      </div>
+      {fmt && (
+        <span style={{
+          padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 800, letterSpacing: 0.5,
+          background: fs.bg, color: fs.color, border: `1px solid ${fs.border}`, whiteSpace: 'nowrap',
+        }}>{fmt}</span>
+      )}
+    </Link>
+  );
+}
+
+function AdRow() {
+  return (
+    <div style={{
+      padding: 16, minHeight: 80, border: `1px dashed ${THEME.border}`, borderRadius: 8,
+      background: THEME.surface2, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      color: THEME.muted, fontSize: 10, letterSpacing: 2, fontWeight: 600, textTransform: 'uppercase',
+    }}>Advertisement</div>
   );
 }
