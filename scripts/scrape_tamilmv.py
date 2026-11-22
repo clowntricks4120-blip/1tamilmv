@@ -22,7 +22,7 @@ FORCE_RESCAN=1 re-scans all home topics and overwrites posters.
 env:
   SUPABASE_URL
   SUPABASE_SERVICE_ROLE_KEY
-  MAX_THREADS (default 30)
+  MAX_THREADS (default 100)
   FORCE_RESCAN (default 0)
 """
 import os, re, sys, time
