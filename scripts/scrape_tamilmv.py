@@ -10,8 +10,8 @@ import requests
 from bs4 import BeautifulSoup
 from supabase import create_client
 
-BASE    = 'https://www.1tamilmv.io'
-HOME    = 'https://1tamilmv.io/'
+BASE    = 'https://www.1tamilmv.ceo'
+HOME    = 'https://www.1tamilmv.ceo/'
 UA      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 HEADERS = {'User-Agent': UA, 'Accept-Encoding': 'identity', 'Referer': BASE + '/'}
 MAX_T   = int(os.environ.get('MAX_THREADS', '30'))
@@ -62,7 +62,7 @@ def topic_urls(home_html):
         if tid in seen:
             continue
         seen.add(tid)
-        out.append((tid, f'https://www.1tamilmv.io/forums/topic/{m.group(1)}-{m.group(2)}/'))
+        out.append((tid, f'https://www.1tamilmv.ceo/index.php?/forums/topic/{m.group(1)}-{m.group(2)}/'))
     return out
 
 
