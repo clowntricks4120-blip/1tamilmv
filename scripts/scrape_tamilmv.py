@@ -2,12 +2,22 @@
 # language: Python 3, file: scripts/scrape_tamilmv.py
 """
 1tamilmv -> Supabase scraper.
-Cron-friendly: only fetches topic_ids NOT already in the movies table.
-Existing rows are never re-fetched or modified (title, downloads, poster
-all frozen once a row is created).
 
-FORCE_RESCAN=1 env: re-fetch every topic on the home page, updating existing
-rows. Use once for a poster backfill, then set back to 0.
+Poster detection:
+  Walks the post body in document order, collecting <img> sources, and
+  stops when it reaches a text node containing "telegram channel". The
+  LAST image before that anchor is the poster (matches site layout:
+  poster at top, then Telegram line, then downloads).
+
+  Falls back to first-image-in-post if the anchor text is absent.
+
+  Thumbnail URLs are upgraded to full-size:
+    - pbs.twimg.com  ?name=small -> ?name=large
+    - imageride.net  xxx.md.png -> xxx.png
+    - postimg        /th/xxx -> /xxx
+
+Only NEW topic_ids are scraped by default (existing rows frozen).
+FORCE_RESCAN=1 re-scans all home topics and overwrites posters.
 
 env:
   SUPABASE_URL
@@ -122,12 +132,36 @@ def topic_urls(home_html, origin):
 
 # ---------- poster ----------
 
+def _normalize_poster_url(src):
+    """Upgrade thumbnail URL to full-size version."""
+    # twitter media: ?name=small -> ?name=large
+    if 'pbs.twimg.com/media/' in src:
+        if 'name=' in src:
+            return re.sub(r'name=[^&]+', 'name=large', src)
+        return src + ('&' if '?' in src else '?') + 'name=large'
+    # imageride: xxx.md.png -> xxx.png, xxx.th.png -> xxx.png
+    if 'imageride.net' in src:
+        return re.sub(r'\.(?:th|md|lg)\.', '.', src)
+    # postimg: /th/xxx -> /xxx
+    if 'postimg' in src:
+        return src.replace('/th/', '/')
+    return src
+
+
 def _img_src(img):
+    """Return normalized image URL, or None. Checks parent <a href> for
+    full-size version if the <a> points directly at an image file."""
     src = img.get('src') or img.get('data-src') or img.get('data-lazy-src') or ''
     src = src.strip()
     if not src or src.startswith('data:'):
         return None
-    return src
+    # img wrapped in <a href="full.jpg"> — prefer href
+    parent = img.parent
+    if parent is not None and getattr(parent, 'name', None) == 'a':
+        href = (parent.get('href') or '').strip()
+        if href and re.search(r'\.(jpg|jpeg|png|webp|gif)(\?|$)', href, re.I):
+            return _normalize_poster_url(href)
+    return _normalize_poster_url(src)
 
 
 def _is_template(src):
@@ -147,6 +181,8 @@ def _is_too_small(img):
 
 
 def find_poster(soup, origin):
+    """Walk post body in document order. Collect <img> srcs. Stop at the
+    text node containing 'telegram channel'. Last image before = poster."""
     body = soup.select_one(
         'article.cPost, '
         '.cPost_contentWrap, '
@@ -154,55 +190,52 @@ def find_poster(soup, origin):
         '.ipsType_richText'
     ) or soup
 
-    images_before_anchor = []
-    hit_anchor = False
-
-    for el in body.descendants:
-        if hit_anchor:
-            break
-
-        if getattr(el, 'name', None) == 'img':
-            src = _img_src(el)
-            if not src or _is_template(src) or _is_too_small(el):
-                continue
-            images_before_anchor.append(absolutize(src, origin))
-            continue
-
-        if getattr(el, 'name', None) in ('p', 'div', 'span', 'a', 'font', 'strong', 'b', 'center'):
-            try:
-                text = el.get_text(' ', strip=True)
-            except Exception:
-                text = ''
-            if text and TELEGRAM_ANCHOR.search(text) and images_before_anchor:
-                hit_anchor = True
-
-    if images_before_anchor:
-        for src in images_before_anchor:
-            low = src.lower()
-            if any(h in low for h in POSTER_HOSTS) and not any(s in low for s in SCREENSHOT_HINTS):
-                return src
-        for src in images_before_anchor:
-            if not any(s in src.lower() for s in SCREENSHOT_HINTS):
-                return src
-        return images_before_anchor[0]
-
     candidates = []
-    for img in body.find_all('img'):
-        src = _img_src(img)
-        if not src or _is_template(src) or _is_too_small(img):
-            continue
-        candidates.append(absolutize(src, origin))
+    state = {'hit': False}
 
-    for src in candidates:
+    def walk(el):
+        if state['hit']:
+            return
+        for child in el.children:
+            if state['hit']:
+                return
+            if isinstance(child, str):
+                if child.strip() and TELEGRAM_ANCHOR.search(child):
+                    state['hit'] = True
+                    return
+            elif hasattr(child, 'name'):
+                if child.name == 'img':
+                    src = _img_src(child)
+                    if src and not _is_template(src) and not _is_too_small(child):
+                        candidates.append(absolutize(src, origin))
+                elif child.name not in ('script', 'style', 'noscript'):
+                    walk(child)
+
+    walk(body)
+
+    if not candidates:
+        for img in body.find_all('img'):
+            src = _img_src(img)
+            if src and not _is_template(src) and not _is_too_small(img):
+                candidates.append(absolutize(src, origin))
+
+    if not candidates:
+        return None
+
+    # anchor found -> last image (closest to anchor = poster above it)
+    # no anchor  -> first image (top of post, best guess)
+    ordered = list(reversed(candidates)) if state['hit'] else candidates
+
+    for src in ordered:
         low = src.lower()
         if any(h in low for h in POSTER_HOSTS) and not any(s in low for s in SCREENSHOT_HINTS):
             return src
 
-    for src in candidates:
+    for src in ordered:
         if not any(s in src.lower() for s in SCREENSHOT_HINTS):
             return src
 
-    return candidates[0] if candidates else None
+    return ordered[0] if ordered else None
 
 
 # ---------- thread parse ----------
@@ -331,7 +364,6 @@ def main():
     topics = topic_urls(home_html, origin)
     print(f'[*] {len(topics)} topics on home')
 
-    # what's already in DB for those ids
     existing = {}
     try:
         ids = [t[0] for t in topics]
@@ -341,11 +373,9 @@ def main():
         print(f'[!] existing lookup failed: {e}', file=sys.stderr)
 
     if FORCE:
-        # backfill mode: re-scan everything, but only overwrite poster if ours was missing
         todo = topics
         print(f'[*] FORCE mode — re-scanning all {len(todo)} topics')
     else:
-        # normal mode: only new topic_ids not yet in DB
         todo = [t for t in topics if t[0] not in existing]
         print(f'[*] {len(todo)} NEW topics to scrape, {len(existing)} already in DB (skipped)')
 
@@ -355,6 +385,7 @@ def main():
 
     processed = 0
     errors = 0
+    poster_changed = 0
 
     for tid, url in todo[:MAX_T]:
         try:
@@ -379,13 +410,14 @@ def main():
                 'featured':       False,
                 'published':      True,
             }
+
+            prior = existing.get(tid) or {}
             if rec['poster_url']:
                 row['poster_url'] = rec['poster_url']
-
-            # in FORCE mode: only set poster_url if prior row has none
-            prior = existing.get(tid) or {}
-            if FORCE and prior.get('poster_url') and not rec['poster_url']:
-                row.pop('poster_url', None)
+                if FORCE and prior.get('poster_url') != rec['poster_url']:
+                    poster_changed += 1
+            elif prior.get('poster_url'):
+                row['poster_url'] = prior['poster_url']
 
             sb.table('movies').upsert(row, on_conflict='topic_id').execute()
             print(f'[+] {tid}  poster={"yes" if rec["poster_url"] else "no"}  dls={len(rec["downloads"])}')
@@ -395,7 +427,7 @@ def main():
             print(f'  [!] {tid}: {e}', file=sys.stderr)
             errors += 1
 
-    print(f'[+] {processed}/{min(len(todo), MAX_T)} processed · {errors} errors')
+    print(f'[+] {processed}/{min(len(todo), MAX_T)} processed · {errors} errors · {poster_changed} posters updated')
 
 
 if __name__ == '__main__':
