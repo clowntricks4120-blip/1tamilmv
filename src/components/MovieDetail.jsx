@@ -36,7 +36,7 @@ export default function MovieDetail() {
 
   if (error) return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: 40, color: THEME.text }}>
-      <Link to="/movies" style={{ color: THEME.accent }}>← Back</Link>
+      <Link to="/" style={{ color: THEME.accent }}>← Back</Link>
       <p style={{ opacity: 0.7, marginTop: 24 }}>{error}</p>
     </div>
   );
@@ -47,12 +47,19 @@ export default function MovieDetail() {
 
   const dls = Array.isArray(movie.downloads) ? movie.downloads : [];
   const groups = {};
-  dls.forEach(d => { const t = d.tier || '720p'; (groups[t] ||= []).push(d); });
+  const unknown = [];
+  dls.forEach(d => {
+    if (d.tier) {
+      (groups[d.tier] ||= []).push(d);
+    } else {
+      unknown.push(d);
+    }
+  });
   const langs = movie.languages || [];
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '16px 12px 48px', background: THEME.bg, color: THEME.text, minHeight: '100vh' }}>
-      <Link to="/movies" style={{ display: 'inline-block', marginBottom: 14, color: THEME.accent, fontSize: 13, textDecoration: 'none' }}>
+      <Link to="/" style={{ display: 'inline-block', marginBottom: 14, color: THEME.accent, fontSize: 13, textDecoration: 'none' }}>
         ← Back
       </Link>
 
@@ -83,30 +90,49 @@ export default function MovieDetail() {
       {dls.length === 0 ? (
         <div style={{ padding: 40, textAlign: 'center', color: THEME.muted }}>No downloads available.</div>
       ) : (
-        TIERS.map(tier => {
-          const rows = groups[tier];
-          if (!rows || !rows.length) return null;
-          const col = TIER_COLOR[tier] || TIER_COLOR['720p'];
-          return (
-            <div key={tier}>
-              <div style={{ marginBottom: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                  <span style={{
-                    padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 800,
-                    background: col.bg, color: col.fg, border: `1px solid ${col.border}`,
-                  }}>{tier}</span>
-                  <span style={{ fontSize: 12, color: THEME.muted }}>
-                    {TIER_LABEL[tier]} · {rows.length} option{rows.length > 1 ? 's' : ''}
-                  </span>
+        <>
+          {TIERS.map(tier => {
+            const rows = groups[tier];
+            if (!rows || !rows.length) return null;
+            const col = TIER_COLOR[tier] || TIER_COLOR['720p'];
+            return (
+              <div key={tier}>
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    <span style={{
+                      padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 800,
+                      background: col.bg, color: col.fg, border: `1px solid ${col.border}`,
+                    }}>{tier}</span>
+                    <span style={{ fontSize: 12, color: THEME.muted }}>
+                      {TIER_LABEL[tier]} · {rows.length} option{rows.length > 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  {rows.map((d, i) => (
+                    <DownloadRow key={i} d={d} movie={movie} />
+                  ))}
                 </div>
-                {rows.map((d, i) => (
-                  <DownloadRow key={i} d={d} movie={movie} />
-                ))}
+                <AdBlock />
               </div>
-              <AdBlock />
+            );
+          })}
+          {unknown.length > 0 && (
+            <div key="other" style={{ marginBottom: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <span style={{
+                  padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 800,
+                  background: 'rgba(125,133,144,0.15)', color: '#7d8590',
+                  border: '1px solid rgba(125,133,144,0.4)'
+                }}>Other</span>
+                <span style={{ fontSize: 12, color: THEME.muted }}>
+                  Unsorted · {unknown.length} option{unknown.length > 1 ? 's' : ''}
+                </span>
+              </div>
+              {unknown.map((d, i) => (
+                <DownloadRow key={`o${i}`} d={d} movie={movie} />
+              ))}
             </div>
-          );
-        })
+          )}
+        </>
       )}
     </div>
   );
@@ -167,4 +193,4 @@ function AdBlock() {
       color: THEME.muted, fontSize: 10, fontWeight: 600, letterSpacing: 2, textTransform: 'uppercase',
     }}>Advertisement</div>
   );
-}
+                }
