@@ -5,26 +5,27 @@
 Runs in GitHub Actions with SUPABASE_SERVICE_ROLE_KEY.
 Never imported by the frontend.
 
+Fetches home, follows the redirect to whichever mirror is live (.io/.ceo/.work),
+extracts every /forums/topic/<id> href verbatim (preserves Invision's
+/index.php?/friendly/ path), then per-thread parses poster + downloads.
+
 Writes rows into the existing movies table with published=true so RLS
-exposes them to the anon-keyed grid. Preserves the lawful-catalogue
-columns (genres, synopsis, trailer_url, official_links, featured) with
-empty defaults — the scraper only populates what it can parse.
+exposes them to the anon-keyed grid.
 
 env:
   SUPABASE_URL
   SUPABASE_SERVICE_ROLE_KEY
-  MAX_THREADS (default 30)
+  MAX_THREADS (default 60)
 """
 import os, re, sys, time
 import requests
 from bs4 import BeautifulSoup
 from supabase import create_client
 
-BASE    = 'https://www.1tamilmv.io'
-HOME    = 'https://1tamilmv.io/'
+HOME    = 'https://1tamilmv.io/'   # redirects to whichever mirror is live
 UA      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-HEADERS = {'User-Agent': UA, 'Accept-Encoding': 'identity', 'Referer': BASE + '/'}
-MAX_T   = int(os.environ.get('MAX_THREADS', '30'))
+HEADERS = {'User-Agent': UA, 'Accept-Encoding': 'identity', 'Referer': HOME}
+MAX_T   = int(os.environ.get('MAX_THREADS', '60'))
 
 LANG_MAP = {
     'tam': 'Tamil', 'tamil': 'Tamil',
@@ -54,27 +55,52 @@ sess = requests.Session()
 sess.headers.update(HEADERS)
 
 
-def fetch(url, timeout=25):
+# ---------- fetch helpers ----------
+
+def fetch_with_origin(url, timeout=25):
+    """GET url, follow redirects, return (html, origin). Origin lets us
+    absolutize relative hrefs against the live mirror."""
     r = sess.get(url, timeout=timeout)
     r.raise_for_status()
-    return r.text
+    m = re.match(r'^(https?://[^/]+)', r.url)
+    origin = m.group(1) if m else 'https://www.1tamilmv.ceo'
+    return r.text, origin
 
 
-def topic_urls(home_html):
+def absolutize(raw, origin):
+    raw = raw.strip()
+    if raw.startswith('http://') or raw.startswith('https://'):
+        return raw
+    if raw.startswith('//'):
+        return 'https:' + raw
+    if raw.startswith('/'):
+        return origin + raw
+    return origin + '/' + raw
+
+
+# ---------- home parse ----------
+
+def topic_urls(home_html, origin):
+    """Return [(tid, absolute_url)]. Uses href verbatim, preserving the
+    Invision /index.php?/forums/topic/<id>-<slug>/ path that 404s if stripped."""
     soup = BeautifulSoup(home_html, 'html.parser')
     out, seen = [], set()
     for a in soup.select('a[href*="/forums/topic/"]'):
-        href = a['href'].split('#')[0]
-        m = re.search(r'/forums/topic/(\d+)-([^/]+)/?', href)
+        raw = a['href'].split('#')[0].strip()
+        if not raw:
+            continue
+        m = re.search(r'/forums/topic/(\d+)', raw)
         if not m:
             continue
         tid = int(m.group(1))
         if tid in seen:
             continue
         seen.add(tid)
-        out.append((tid, f'https://www.1tamilmv.io/forums/topic/{m.group(1)}-{m.group(2)}/'))
+        out.append((tid, absolutize(raw, origin)))
     return out
 
+
+# ---------- thread parse ----------
 
 def normalize_langs(blob):
     found = set()
@@ -201,32 +227,43 @@ def extract_downloads(soup):
     return downloads
 
 
+# ---------- main ----------
+
 def main():
     print('[*] fetching home')
-    topics = topic_urls(fetch(HOME))
+    home_html, origin = fetch_with_origin(HOME)
+    print(f'[*] origin after redirect: {origin}')
+
+    topics = topic_urls(home_html, origin)
     print(f'[*] {len(topics)} topics')
 
     processed = 0
     for tid, url in topics[:MAX_T]:
         try:
-            print(f'[>] {tid}')
-            rec = parse_thread(tid, url, fetch(url))
+            print(f'[>] {tid} {url}')
+            page = sess.get(url, timeout=25)
+            if page.status_code != 200:
+                print(f'  [!] {tid}: HTTP {page.status_code}', file=sys.stderr)
+                continue
+
+            rec = parse_thread(tid, url, page.text)
             sb.table('movies').upsert({
-                'topic_id':      rec['topic_id'],
-                'title':         rec['title'],
-                'year':          rec['year'],
-                'poster_url':    rec['poster_url'],
-                'languages':     rec['languages'],
-                'downloads':     rec['downloads'],
-                'source_url':    rec['source_url'],
-                'genres':        [],
-                'synopsis':      '',
+                'topic_id':       rec['topic_id'],
+                'title':          rec['title'],
+                'year':           rec['year'],
+                'poster_url':     rec['poster_url'],
+                'languages':      rec['languages'],
+                'downloads':      rec['downloads'],
+                'source_url':     rec['source_url'],
+                'genres':         [],
+                'synopsis':       '',
                 'official_links': [],
-                'featured':      False,
-                'published':     True,
+                'featured':       False,
+                'published':      True,
             }, on_conflict='topic_id').execute()
+
             processed += 1
-            time.sleep(0.5)
+            time.sleep(0.4)
         except Exception as e:
             print(f'  [!] {tid}: {e}', file=sys.stderr)
 
