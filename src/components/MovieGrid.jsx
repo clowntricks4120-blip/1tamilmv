@@ -30,11 +30,11 @@ export default function MovieGrid() {
     setLoading(true);
 
     let req = supabase
-      .from('movies')
-      .select('id,title,year,poster_url,languages,downloads,scraped_at')
-      .eq('published', true)
-      .order('scraped_at', { ascending: false })
-      .limit(180);
+  .from('movies')
+  .select('id,title,year,poster_url,languages,downloads,created_at')
+  .eq('published', true)
+  .order('created_at', { ascending: false })
+  .limit(180);
 
     if (q.trim()) req = req.ilike('title', `%${q.trim()}%`);
     if (lang) req = req.contains('languages', [lang]);
