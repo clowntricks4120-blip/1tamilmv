@@ -2,15 +2,12 @@
 # language: Python 3, file: scripts/scrape_tamilmv.py
 """
 1tamilmv -> Supabase scraper.
-Runs in GitHub Actions with SUPABASE_SERVICE_ROLE_KEY.
-Never imported by the frontend.
+Poster detection: first non-template image inside the post body, preferring
+known poster hosts (Amazon, TMDB, imageride, imgbb, postimg). Falls back to
+the first large image, skipping screenshots and template chrome.
 
-Fetches home, follows the redirect to whichever mirror is live (.io/.ceo/.work),
-extracts every /forums/topic/<id> href verbatim (preserves Invision's
-/index.php?/friendly/ path), then per-thread parses poster + downloads.
-
-Writes rows into the existing movies table with published=true so RLS
-exposes them to the anon-keyed grid.
+Priority order in main(): topics WITHOUT a poster_url in DB get fetched first,
+so a single run with MAX_THREADS=300 backfills every missing poster.
 
 env:
   SUPABASE_URL
@@ -22,7 +19,7 @@ import requests
 from bs4 import BeautifulSoup
 from supabase import create_client
 
-HOME    = 'https://1tamilmv.io/'   # redirects to whichever mirror is live
+HOME    = 'https://1tamilmv.io/'
 UA      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 HEADERS = {'User-Agent': UA, 'Accept-Encoding': 'identity', 'Referer': HOME}
 MAX_T   = int(os.environ.get('MAX_THREADS', '60'))
@@ -50,16 +47,35 @@ FORMAT_PATTERNS = [
     ('HD',     r'\b(hdrip|hd)\b'),
 ]
 
+TEMPLATE_IMG = (
+    'torrborder', 'utorrent', 'logo.png', 'logo.jpg',
+    'smiley', 'emoticon', 'twemoji', 'jsdelivr.net/gh/twitter',
+    'default_photo', 'avatar', 'icon_',
+)
+
+POSTER_HOSTS = (
+    'm.media-amazon.com',
+    'image.tmdb.org',
+    'i.ibb.co',
+    'imgbb.com',
+    'i.postimg.cc',
+    'postimg.cc',
+    'img.imageride.net',
+    'img1.imageride.net',
+)
+
+SCREENSHOT_HINTS = (
+    'vlcsnap', 'screenshot', 'snap-', 'thumb-', 'preview',
+)
+
 sb   = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_ROLE_KEY'])
 sess = requests.Session()
 sess.headers.update(HEADERS)
 
 
-# ---------- fetch helpers ----------
+# ---------- fetch ----------
 
 def fetch_with_origin(url, timeout=25):
-    """GET url, follow redirects, return (html, origin). Origin lets us
-    absolutize relative hrefs against the live mirror."""
     r = sess.get(url, timeout=timeout)
     r.raise_for_status()
     m = re.match(r'^(https?://[^/]+)', r.url)
@@ -81,8 +97,6 @@ def absolutize(raw, origin):
 # ---------- home parse ----------
 
 def topic_urls(home_html, origin):
-    """Return [(tid, absolute_url)]. Uses href verbatim, preserving the
-    Invision /index.php?/forums/topic/<id>-<slug>/ path that 404s if stripped."""
     soup = BeautifulSoup(home_html, 'html.parser')
     out, seen = [], set()
     for a in soup.select('a[href*="/forums/topic/"]'):
@@ -98,6 +112,76 @@ def topic_urls(home_html, origin):
         seen.add(tid)
         out.append((tid, absolutize(raw, origin)))
     return out
+
+
+# ---------- poster ----------
+
+def find_poster(soup, origin):
+    """Return absolute URL of the best poster candidate, or None."""
+    # try post-body containers first
+    containers = soup.select(
+        'article.cPost, '
+        '.cPost_contentWrap, '
+        '[data-role="commentContent"], '
+        '.ipsType_richText, '
+        '.cPost_body, '
+        '.ipsRichText'
+    )
+
+    imgs = []
+    for c in containers:
+        for img in c.find_all('img'):
+            imgs.append(img)
+    if not imgs:
+        imgs = soup.find_all('img')
+
+    # collect src (handle data-src for lazy load)
+    candidates = []
+    for img in imgs:
+        src = img.get('src') or img.get('data-src') or ''
+        if not src:
+            continue
+        low = src.lower()
+
+        # skip template chrome
+        if any(t in low for t in TEMPLATE_IMG):
+            continue
+        # skip tiny inline icons / data URIs
+        if src.startswith('data:') or 'pixel' in low or 'spacer' in low:
+            continue
+
+        # get image dimensions if listed — skip icons
+        w = img.get('width', '')
+        h = img.get('height', '')
+        try:
+            if w and int(str(w).replace('px', '').strip() or 0) < 80:
+                continue
+            if h and int(str(h).replace('px', '').strip() or 0) < 80:
+                continue
+        except Exception:
+            pass
+
+        candidates.append(absolutize(src, origin))
+
+    if not candidates:
+        return None
+
+    # 1. known poster hosts
+    for src in candidates:
+        if any(h in src.lower() for h in POSTER_HOSTS):
+            # but reject imageride screenshots even on known hosts
+            low = src.lower()
+            if any(s in low for s in SCREENSHOT_HINTS):
+                continue
+            return src
+
+    # 2. first non-screenshot image
+    for src in candidates:
+        if not any(s in src.lower() for s in SCREENSHOT_HINTS):
+            return src
+
+    # 3. last resort — first screenshot
+    return candidates[0]
 
 
 # ---------- thread parse ----------
@@ -119,7 +203,7 @@ def detect_format(text):
     return 'HD'
 
 
-def parse_thread(tid, url, html):
+def parse_thread(tid, url, html, origin):
     soup = BeautifulSoup(html, 'html.parser')
 
     h1 = soup.find('h1')
@@ -131,19 +215,7 @@ def parse_thread(tid, url, html):
     ym = re.search(r'\((\d{4})\)', title)
     year = int(ym.group(1)) if ym else None
 
-    poster = None
-    for img in soup.find_all('img'):
-        src = img.get('src', '')
-        if 'm.media-amazon.com' in src:
-            poster = src
-            break
-    if not poster:
-        for img in soup.find_all('img'):
-            src = img.get('src', '')
-            if 'imageride.net' in src and 'vlcsnap' in src:
-                poster = src
-                break
-
+    poster = find_poster(soup, origin)
     downloads = extract_downloads(soup)
     blob = ' '.join((d.get('langs', '') + ' ' + d.get('header', '')) for d in downloads)
     langs = normalize_langs(blob) or normalize_langs(title)
@@ -211,7 +283,7 @@ def extract_downloads(soup):
             for a in row.find_all('a'):
                 txt = a.get_text(' ', strip=True)
                 hh  = a.get('href', '')
-                if hh.endswith('.torrent') and not torrent_url:
+                if not torrent_url and (hh.endswith('.torrent') or 'attachment.php' in hh):
                     torrent_url = hh
                 if 'DIRECT LINK' in txt.upper() and not direct_url:
                     direct_url = hh
@@ -237,8 +309,29 @@ def main():
     topics = topic_urls(home_html, origin)
     print(f'[*] {len(topics)} topics')
 
+    # lookup existing rows for these topic_ids so we can prioritize
+    existing = {}
+    try:
+        ids = [t[0] for t in topics]
+        resp = sb.table('movies').select('topic_id,poster_url').in_('topic_id', ids).execute()
+        existing = {r['topic_id']: r for r in resp.data}
+    except Exception as e:
+        print(f'[!] existing lookup failed: {e}', file=sys.stderr)
+
+    def needs_poster(tid):
+        row = existing.get(tid)
+        return row is None or not row.get('poster_url')
+
+    prioritized = ([t for t in topics if needs_poster(t[0])]
+                 + [t for t in topics if not needs_poster(t[0])])
+
+    no_poster_count = sum(1 for t in topics if needs_poster(t[0]))
+    print(f'[*] {no_poster_count} topics still missing posters')
+
     processed = 0
-    for tid, url in topics[:MAX_T]:
+    poster_fixed = 0
+
+    for tid, url in prioritized[:MAX_T]:
         try:
             print(f'[>] {tid} {url}')
             page = sess.get(url, timeout=25)
@@ -246,12 +339,12 @@ def main():
                 print(f'  [!] {tid}: HTTP {page.status_code}', file=sys.stderr)
                 continue
 
-            rec = parse_thread(tid, url, page.text)
-            sb.table('movies').upsert({
+            rec = parse_thread(tid, url, page.text, origin)
+
+            row = {
                 'topic_id':       rec['topic_id'],
                 'title':          rec['title'],
                 'year':           rec['year'],
-                'poster_url':     rec['poster_url'],
                 'languages':      rec['languages'],
                 'downloads':      rec['downloads'],
                 'source_url':     rec['source_url'],
@@ -260,14 +353,25 @@ def main():
                 'official_links': [],
                 'featured':       False,
                 'published':      True,
-            }, on_conflict='topic_id').execute()
+            }
 
+            prior = existing.get(tid) or {}
+            if rec['poster_url']:
+                row['poster_url'] = rec['poster_url']
+                if not prior.get('poster_url'):
+                    poster_fixed += 1
+            elif prior.get('poster_url'):
+                row['poster_url'] = prior['poster_url']
+            # else leave unset — grid shows placeholder
+
+            sb.table('movies').upsert(row, on_conflict='topic_id').execute()
             processed += 1
             time.sleep(0.4)
         except Exception as e:
             print(f'  [!] {tid}: {e}', file=sys.stderr)
 
-    print(f'[+] {processed}/{min(len(topics), MAX_T)}')
+    print(f'[+] {processed}/{min(len(prioritized), MAX_T)}')
+    print(f'[+] {poster_fixed} posters newly added')
 
 
 if __name__ == '__main__':
