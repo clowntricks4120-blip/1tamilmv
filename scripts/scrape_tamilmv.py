@@ -2,17 +2,18 @@
 # language: Python 3, file: scripts/scrape_tamilmv.py
 """
 1tamilmv -> Supabase scraper.
-Poster detection: first non-template image inside the post body, preferring
-known poster hosts (Amazon, TMDB, imageride, imgbb, postimg). Falls back to
-the first large image, skipping screenshots and template chrome.
+Cron-friendly: only fetches topic_ids NOT already in the movies table.
+Existing rows are never re-fetched or modified (title, downloads, poster
+all frozen once a row is created).
 
-Priority order in main(): topics WITHOUT a poster_url in DB get fetched first,
-so a single run with MAX_THREADS=300 backfills every missing poster.
+FORCE_RESCAN=1 env: re-fetch every topic on the home page, updating existing
+rows. Use once for a poster backfill, then set back to 0.
 
 env:
   SUPABASE_URL
   SUPABASE_SERVICE_ROLE_KEY
-  MAX_THREADS (default 60)
+  MAX_THREADS (default 30)
+  FORCE_RESCAN (default 0)
 """
 import os, re, sys, time
 import requests
@@ -22,7 +23,8 @@ from supabase import create_client
 HOME    = 'https://1tamilmv.io/'
 UA      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 HEADERS = {'User-Agent': UA, 'Accept-Encoding': 'identity', 'Referer': HOME}
-MAX_T   = int(os.environ.get('MAX_THREADS', '60'))
+MAX_T   = int(os.environ.get('MAX_THREADS', '30'))
+FORCE   = os.environ.get('FORCE_RESCAN', '0') == '1'
 
 LANG_MAP = {
     'tam': 'Tamil', 'tamil': 'Tamil',
@@ -48,12 +50,14 @@ FORMAT_PATTERNS = [
 ]
 
 TEMPLATE_IMG = (
-    'torrborder', 'utorrent', 'logo.png', 'logo.jpg',
+    'torrborder', 'utorrent', 'logo.png', 'logo.jpg', 'logo.svg',
     'smiley', 'emoticon', 'twemoji', 'jsdelivr.net/gh/twitter',
-    'default_photo', 'avatar', 'icon_',
+    'default_photo', 'avatar', 'icon_', 'telegram', 't.me',
+    'telegram-icon', 'channel-icon',
 )
 
 POSTER_HOSTS = (
+    'pbs.twimg.com',
     'm.media-amazon.com',
     'image.tmdb.org',
     'i.ibb.co',
@@ -67,6 +71,8 @@ POSTER_HOSTS = (
 SCREENSHOT_HINTS = (
     'vlcsnap', 'screenshot', 'snap-', 'thumb-', 'preview',
 )
+
+TELEGRAM_ANCHOR = re.compile(r'telegram\s*channel', re.I)
 
 sb   = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_ROLE_KEY'])
 sess = requests.Session()
@@ -116,72 +122,87 @@ def topic_urls(home_html, origin):
 
 # ---------- poster ----------
 
+def _img_src(img):
+    src = img.get('src') or img.get('data-src') or img.get('data-lazy-src') or ''
+    src = src.strip()
+    if not src or src.startswith('data:'):
+        return None
+    return src
+
+
+def _is_template(src):
+    low = src.lower()
+    return any(t in low for t in TEMPLATE_IMG)
+
+
+def _is_too_small(img):
+    try:
+        w = int(str(img.get('width', '0')).replace('px', '').strip() or 0)
+        h = int(str(img.get('height', '0')).replace('px', '').strip() or 0)
+        if w and w < 80: return True
+        if h and h < 80: return True
+    except Exception:
+        pass
+    return False
+
+
 def find_poster(soup, origin):
-    """Return absolute URL of the best poster candidate, or None."""
-    # try post-body containers first
-    containers = soup.select(
+    body = soup.select_one(
         'article.cPost, '
         '.cPost_contentWrap, '
         '[data-role="commentContent"], '
-        '.ipsType_richText, '
-        '.cPost_body, '
-        '.ipsRichText'
-    )
+        '.ipsType_richText'
+    ) or soup
 
-    imgs = []
-    for c in containers:
-        for img in c.find_all('img'):
-            imgs.append(img)
-    if not imgs:
-        imgs = soup.find_all('img')
+    images_before_anchor = []
+    hit_anchor = False
 
-    # collect src (handle data-src for lazy load)
+    for el in body.descendants:
+        if hit_anchor:
+            break
+
+        if getattr(el, 'name', None) == 'img':
+            src = _img_src(el)
+            if not src or _is_template(src) or _is_too_small(el):
+                continue
+            images_before_anchor.append(absolutize(src, origin))
+            continue
+
+        if getattr(el, 'name', None) in ('p', 'div', 'span', 'a', 'font', 'strong', 'b', 'center'):
+            try:
+                text = el.get_text(' ', strip=True)
+            except Exception:
+                text = ''
+            if text and TELEGRAM_ANCHOR.search(text) and images_before_anchor:
+                hit_anchor = True
+
+    if images_before_anchor:
+        for src in images_before_anchor:
+            low = src.lower()
+            if any(h in low for h in POSTER_HOSTS) and not any(s in low for s in SCREENSHOT_HINTS):
+                return src
+        for src in images_before_anchor:
+            if not any(s in src.lower() for s in SCREENSHOT_HINTS):
+                return src
+        return images_before_anchor[0]
+
     candidates = []
-    for img in imgs:
-        src = img.get('src') or img.get('data-src') or ''
-        if not src:
+    for img in body.find_all('img'):
+        src = _img_src(img)
+        if not src or _is_template(src) or _is_too_small(img):
             continue
-        low = src.lower()
-
-        # skip template chrome
-        if any(t in low for t in TEMPLATE_IMG):
-            continue
-        # skip tiny inline icons / data URIs
-        if src.startswith('data:') or 'pixel' in low or 'spacer' in low:
-            continue
-
-        # get image dimensions if listed — skip icons
-        w = img.get('width', '')
-        h = img.get('height', '')
-        try:
-            if w and int(str(w).replace('px', '').strip() or 0) < 80:
-                continue
-            if h and int(str(h).replace('px', '').strip() or 0) < 80:
-                continue
-        except Exception:
-            pass
-
         candidates.append(absolutize(src, origin))
 
-    if not candidates:
-        return None
-
-    # 1. known poster hosts
     for src in candidates:
-        if any(h in src.lower() for h in POSTER_HOSTS):
-            # but reject imageride screenshots even on known hosts
-            low = src.lower()
-            if any(s in low for s in SCREENSHOT_HINTS):
-                continue
+        low = src.lower()
+        if any(h in low for h in POSTER_HOSTS) and not any(s in low for s in SCREENSHOT_HINTS):
             return src
 
-    # 2. first non-screenshot image
     for src in candidates:
         if not any(s in src.lower() for s in SCREENSHOT_HINTS):
             return src
 
-    # 3. last resort — first screenshot
-    return candidates[0]
+    return candidates[0] if candidates else None
 
 
 # ---------- thread parse ----------
@@ -302,14 +323,15 @@ def extract_downloads(soup):
 # ---------- main ----------
 
 def main():
+    print(f'[*] FORCE_RESCAN={FORCE}')
     print('[*] fetching home')
     home_html, origin = fetch_with_origin(HOME)
     print(f'[*] origin after redirect: {origin}')
 
     topics = topic_urls(home_html, origin)
-    print(f'[*] {len(topics)} topics')
+    print(f'[*] {len(topics)} topics on home')
 
-    # lookup existing rows for these topic_ids so we can prioritize
+    # what's already in DB for those ids
     existing = {}
     try:
         ids = [t[0] for t in topics]
@@ -318,25 +340,28 @@ def main():
     except Exception as e:
         print(f'[!] existing lookup failed: {e}', file=sys.stderr)
 
-    def needs_poster(tid):
-        row = existing.get(tid)
-        return row is None or not row.get('poster_url')
+    if FORCE:
+        # backfill mode: re-scan everything, but only overwrite poster if ours was missing
+        todo = topics
+        print(f'[*] FORCE mode — re-scanning all {len(todo)} topics')
+    else:
+        # normal mode: only new topic_ids not yet in DB
+        todo = [t for t in topics if t[0] not in existing]
+        print(f'[*] {len(todo)} NEW topics to scrape, {len(existing)} already in DB (skipped)')
 
-    prioritized = ([t for t in topics if needs_poster(t[0])]
-                 + [t for t in topics if not needs_poster(t[0])])
-
-    no_poster_count = sum(1 for t in topics if needs_poster(t[0]))
-    print(f'[*] {no_poster_count} topics still missing posters')
+    if not todo:
+        print('[+] nothing new. exit.')
+        return
 
     processed = 0
-    poster_fixed = 0
+    errors = 0
 
-    for tid, url in prioritized[:MAX_T]:
+    for tid, url in todo[:MAX_T]:
         try:
-            print(f'[>] {tid} {url}')
             page = sess.get(url, timeout=25)
             if page.status_code != 200:
                 print(f'  [!] {tid}: HTTP {page.status_code}', file=sys.stderr)
+                errors += 1
                 continue
 
             rec = parse_thread(tid, url, page.text, origin)
@@ -354,24 +379,23 @@ def main():
                 'featured':       False,
                 'published':      True,
             }
-
-            prior = existing.get(tid) or {}
             if rec['poster_url']:
                 row['poster_url'] = rec['poster_url']
-                if not prior.get('poster_url'):
-                    poster_fixed += 1
-            elif prior.get('poster_url'):
-                row['poster_url'] = prior['poster_url']
-            # else leave unset — grid shows placeholder
+
+            # in FORCE mode: only set poster_url if prior row has none
+            prior = existing.get(tid) or {}
+            if FORCE and prior.get('poster_url') and not rec['poster_url']:
+                row.pop('poster_url', None)
 
             sb.table('movies').upsert(row, on_conflict='topic_id').execute()
+            print(f'[+] {tid}  poster={"yes" if rec["poster_url"] else "no"}  dls={len(rec["downloads"])}')
             processed += 1
             time.sleep(0.4)
         except Exception as e:
             print(f'  [!] {tid}: {e}', file=sys.stderr)
+            errors += 1
 
-    print(f'[+] {processed}/{min(len(prioritized), MAX_T)}')
-    print(f'[+] {poster_fixed} posters newly added')
+    print(f'[+] {processed}/{min(len(todo), MAX_T)} processed · {errors} errors')
 
 
 if __name__ == '__main__':
