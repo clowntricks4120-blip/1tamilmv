@@ -387,7 +387,7 @@ def main():
     errors = 0
     poster_changed = 0
 
-    for tid, url in todo[:MAX_T]:
+    for tid, url in todo:
         try:
             page = sess.get(url, timeout=25)
             if page.status_code != 200:
