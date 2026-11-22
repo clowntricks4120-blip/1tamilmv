@@ -22,7 +22,7 @@ FORCE_RESCAN=1 re-scans all home topics and overwrites posters.
 env:
   SUPABASE_URL
   SUPABASE_SERVICE_ROLE_KEY
-  MAX_THREADS (default 100)
+  MAX_THREADS (default 1000)
   FORCE_RESCAN (default 0)
 """
 import os, re, sys, time
@@ -33,7 +33,7 @@ from supabase import create_client
 HOME    = 'https://1tamilmv.io/'
 UA      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 HEADERS = {'User-Agent': UA, 'Accept-Encoding': 'identity', 'Referer': HOME}
-MAX_T   = int(os.environ.get('MAX_THREADS', '30'))
+MAX_T   = int(os.environ.get('MAX_THREADS', '1000'))
 FORCE   = os.environ.get('FORCE_RESCAN', '0') == '1'
 
 LANG_MAP = {
