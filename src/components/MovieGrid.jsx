@@ -5,6 +5,8 @@ import { supabase } from '../supabase';
 
 const LANGS = ['All', 'Tamil', 'Telugu', 'Hindi', 'Malayalam', 'Kannada', 'English'];
 const FMT_ORDER = ['4K', '2K', '1080p', '720p', '480p', 'BluRay', 'WEB-DL', 'HD', 'TC', 'CAM'];
+const MODDED_APPS_URL = 'https://ct.clowntricks4120.workers.dev';
+const AD_EVERY = 6;
 
 const THEME = {
   bg:      '#0d1117',
@@ -34,9 +36,19 @@ function fmtStyle(f) {
 
 export default function MovieGrid() {
   const [movies, setMovies] = useState([]);
+  const [total, setTotal] = useState(null);
   const [loading, setLoading] = useState(true);
   const [lang, setLang] = useState('');
   const [q, setQ] = useState('');
+
+  // total published count, unfiltered — for the header badge
+  useEffect(() => {
+    supabase
+      .from('movies')
+      .select('id', { count: 'exact', head: true })
+      .eq('published', true)
+      .then(({ count }) => { if (typeof count === 'number') setTotal(count); });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,14 +73,40 @@ export default function MovieGrid() {
     return () => { cancelled = true; };
   }, [q, lang]);
 
+  // interleave ad rows every AD_EVERY movies
   const rows = [];
   movies.forEach((m, i) => {
-    if (i > 0 && i % 10 === 0) rows.push(<AdRow key={`ad-${i}`} />);
+    if (i > 0 && i % AD_EVERY === 0) rows.push(<AdRow key={`ad-${i}`} />);
     rows.push(<MovieRow key={m.id} movie={m} />);
   });
 
   return (
     <div style={{ maxWidth: 1000, margin: '0 auto', padding: '16px 12px 48px', background: THEME.bg, color: THEME.text, minHeight: '100vh' }}>
+      {/* header strip: count + modded apps */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: 10, marginBottom: 14, flexWrap: 'wrap',
+      }}>
+        <div style={{ fontSize: 13, color: THEME.muted }}>
+          <span style={{ color: THEME.accent, fontWeight: 700, fontSize: 18 }}>
+            {total === null ? '—' : total.toLocaleString()}
+          </span>{' '}
+          titles indexed
+        </div>
+        <a
+          href={MODDED_APPS_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            padding: '8px 14px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+            background: THEME.accentDim, color: THEME.accent,
+            border: `1px solid ${THEME.accent}`, textDecoration: 'none',
+            whiteSpace: 'nowrap',
+          }}
+        >Modded Apps →</a>
+      </div>
+
+      {/* language filters */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
         {LANGS.map(l => {
           const v = l === 'All' ? '' : l;
