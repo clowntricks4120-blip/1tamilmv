@@ -3,21 +3,25 @@
 """
 1tamilmv -> Supabase scraper.
 
+Tier extraction (the core fix):
+  Per-link tier is derived by walking UP from each magnet anchor to the
+  nearest ancestor whose text contains exactly ONE resolution token
+  (2160p/4K/UHD, 1440p/2K, 1080p, 720p, 480p). If an ancestor lists
+  several ('[4K, 1080p & 720p]'), the walk keeps climbing until a single
+  one wins. If the DOM never narrows to one tier, a previous-sibling walk
+  is tried. If that also fails, the tier is inferred from the file size.
+
+  There is NO hardcoded '720p' default. An unparseable link gets tier=None
+  and the UI routes it to "Other". A size-based inference is the final
+  fallback so a movie with sizes never lands with empty tiers.
+
 Poster detection:
-  Walks the post body in document order, collecting <img> sources, and
-  stops when it reaches a text node containing "telegram channel". The
-  LAST image before that anchor is the poster (matches site layout:
-  poster at top, then Telegram line, then downloads).
-
-  Falls back to first-image-in-post if the anchor text is absent.
-
-  Thumbnail URLs are upgraded to full-size:
-    - pbs.twimg.com  ?name=small -> ?name=large
-    - imageride.net  xxx.md.png -> xxx.png
-    - postimg        /th/xxx -> /xxx
+  Walks the post body in document order, collects <img> sources, stops at
+  the text node containing "telegram channel". The LAST image before that
+  anchor is the poster. Falls back to first-image-in-post.
 
 Only NEW topic_ids are scraped by default (existing rows frozen).
-FORCE_RESCAN=1 re-scans all home topics and overwrites posters.
+FORCE_RESCAN=1 re-scans all home topics and overwrites rows.
 
 env:
   SUPABASE_URL
@@ -43,7 +47,9 @@ LANG_MAP = {
     'mal': 'Malayalam', 'malayalam': 'Malayalam',
     'kan': 'Kannada', 'kannada': 'Kannada',
     'eng': 'English', 'english': 'English',
-    'kor': 'Korean', 'jap': 'Japanese', 'chi': 'Chinese',
+    'kor': 'Korean', 'korean': 'Korean',
+    'jap': 'Japanese', 'japanese': 'Japanese',
+    'chi': 'Chinese', 'chinese': 'Chinese',
 }
 
 FORMAT_PATTERNS = [
@@ -59,32 +65,35 @@ FORMAT_PATTERNS = [
     ('HD',     r'\b(hdrip|hd)\b'),
 ]
 
+# canonical tier vocabulary
+TIER_CANON = {
+    '2160p': '4K', '2160': '4K', '4k': '4K', 'uhd': '4K',
+    '1440p': '2K', '1440': '2K', '2k': '2K', 'qhd': '2K',
+    '1080p': '1080p', '1080': '1080p', 'fhd': '1080p',
+    '720p': '720p', '720': '720p', 'hd': '720p',
+    '480p': '480p', '480': '480p', '360p': '480p', 'sd': '480p',
+}
+TIER_TOKEN = re.compile(
+    r'\b(2160p|1440p|1080p|720p|480p|360p|4k|2k|uhd|fhd|qhd|sd)\b',
+    re.I,
+)
+SIZE_RE = re.compile(r'(\d+(?:\.\d+)?\s*(?:GB|MB))', re.I)
+
 TEMPLATE_IMG = (
     'torrborder', 'utorrent', 'logo.png', 'logo.jpg', 'logo.svg',
     'smiley', 'emoticon', 'twemoji', 'jsdelivr.net/gh/twitter',
     'default_photo', 'avatar', 'icon_', 'telegram', 't.me',
     'telegram-icon', 'channel-icon',
 )
-
 POSTER_HOSTS = (
-    'pbs.twimg.com',
-    'm.media-amazon.com',
-    'image.tmdb.org',
-    'i.ibb.co',
-    'imgbb.com',
-    'i.postimg.cc',
-    'postimg.cc',
-    'img.imageride.net',
-    'img1.imageride.net',
+    'pbs.twimg.com', 'm.media-amazon.com', 'image.tmdb.org',
+    'i.ibb.co', 'imgbb.com', 'i.postimg.cc', 'postimg.cc',
+    'img.imageride.net', 'img1.imageride.net',
 )
-
-SCREENSHOT_HINTS = (
-    'vlcsnap', 'screenshot', 'snap-', 'thumb-', 'preview',
-)
-
+SCREENSHOT_HINTS = ('vlcsnap', 'screenshot', 'snap-', 'thumb-', 'preview')
 TELEGRAM_ANCHOR = re.compile(r'telegram\s*channel', re.I)
 
-sb   = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_ROLE_KEY'])
+sb = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_ROLE_KEY'])
 sess = requests.Session()
 sess.headers.update(HEADERS)
 
@@ -133,29 +142,22 @@ def topic_urls(home_html, origin):
 # ---------- poster ----------
 
 def _normalize_poster_url(src):
-    """Upgrade thumbnail URL to full-size version."""
-    # twitter media: ?name=small -> ?name=large
     if 'pbs.twimg.com/media/' in src:
         if 'name=' in src:
             return re.sub(r'name=[^&]+', 'name=large', src)
         return src + ('&' if '?' in src else '?') + 'name=large'
-    # imageride: xxx.md.png -> xxx.png, xxx.th.png -> xxx.png
     if 'imageride.net' in src:
         return re.sub(r'\.(?:th|md|lg)\.', '.', src)
-    # postimg: /th/xxx -> /xxx
     if 'postimg' in src:
         return src.replace('/th/', '/')
     return src
 
 
 def _img_src(img):
-    """Return normalized image URL, or None. Checks parent <a href> for
-    full-size version if the <a> points directly at an image file."""
     src = img.get('src') or img.get('data-src') or img.get('data-lazy-src') or ''
     src = src.strip()
     if not src or src.startswith('data:'):
         return None
-    # img wrapped in <a href="full.jpg"> — prefer href
     parent = img.parent
     if parent is not None and getattr(parent, 'name', None) == 'a':
         href = (parent.get('href') or '').strip()
@@ -181,8 +183,6 @@ def _is_too_small(img):
 
 
 def find_poster(soup, origin):
-    """Walk post body in document order. Collect <img> srcs. Stop at the
-    text node containing 'telegram channel'. Last image before = poster."""
     body = soup.select_one(
         'article.cPost, '
         '.cPost_contentWrap, '
@@ -222,8 +222,6 @@ def find_poster(soup, origin):
     if not candidates:
         return None
 
-    # anchor found -> last image (closest to anchor = poster above it)
-    # no anchor  -> first image (top of post, best guess)
     ordered = list(reversed(candidates)) if state['hit'] else candidates
 
     for src in ordered:
@@ -238,24 +236,144 @@ def find_poster(soup, origin):
     return ordered[0] if ordered else None
 
 
-# ---------- thread parse ----------
+# ---------- language ----------
 
 def normalize_langs(blob):
     found = set()
-    for tok in re.split(r'[+,\/|\[\]\(\)\s]+', blob):
+    for tok in re.split(r'[+,\/|\[\]\(\)\s]+', blob or ''):
         t = tok.strip().lower()
         if t in LANG_MAP:
             found.add(LANG_MAP[t])
     return sorted(found)
 
 
+def _langs_from_anchor(anchor):
+    known_words = set(LANG_MAP.keys())
+    node = anchor
+    for _ in range(4):
+        node = node.parent
+        if node is None or not hasattr(node, 'get_text'):
+            break
+        words = re.split(r'[\s+&,/\[\]()\-]+', node.get_text(' ', strip=True).lower())
+        found = [w for w in words if w in known_words]
+        if found:
+            seen, out = set(), []
+            for w in found:
+                if w not in seen:
+                    seen.add(w)
+                    out.append(LANG_MAP[w])
+            return ' + '.join(out)
+    return ''
+
+
+# ---------- tier ----------
+
+def _canon_tier(tok):
+    return TIER_CANON.get(tok.lower()) if tok else None
+
+
+def _tier_from_ancestors(anchor, max_up=8):
+    """
+    Walk up from the <a>. Return the tier of the nearest ancestor that
+    mentions exactly ONE tier. Ancestors mentioning several tiers
+    ('[4K, 1080p & 720p]') are ignored — the per-link <p> heading is
+    closer and wins. Returns None if no unambiguous ancestor found.
+    """
+    node = anchor
+    for _ in range(max_up):
+        node = node.parent
+        if node is None or not hasattr(node, 'get_text'):
+            break
+        text = node.get_text(' ', strip=True)
+        hits = {_canon_tier(m.group(1)) for m in TIER_TOKEN.finditer(text)}
+        hits.discard(None)
+        if len(hits) == 1:
+            return hits.pop()
+    return None
+
+
+def _tier_from_prev_sibling(anchor):
+    """
+    Fallback for layouts like:
+        <p><strong>1080p:</strong></p>
+        <p><a href="magnet:...">2.2GB</a></p>
+    where the tier heading is a *previous sibling* paragraph, not an
+    ancestor of the anchor.
+    """
+    node = anchor
+    for _ in range(4):
+        try:
+            sib = node.find_previous_sibling()
+        except AttributeError:
+            sib = None
+        if sib is None:
+            if node.parent is not None:
+                node = node.parent
+                continue
+            break
+        text = sib.get_text(' ', strip=True) if hasattr(sib, 'get_text') else str(sib)
+        hits = {_canon_tier(m.group(1)) for m in TIER_TOKEN.finditer(text)}
+        hits.discard(None)
+        if len(hits) == 1:
+            return hits.pop()
+        node = sib
+    return None
+
+
+def _tier_from_size(size_str):
+    """
+    Last-resort fallback. Thresholds calibrated to TamilMV's actual size
+    economy:
+      ≥12GB -> 4K
+      ≥3GB  -> 1080p
+      ≥1GB  -> 720p
+      <1GB  -> 480p
+    """
+    if not size_str:
+        return None
+    m = SIZE_RE.search(size_str)
+    if not m:
+        return None
+    raw = m.group(1).upper()
+    try:
+        num = float(re.sub(r'[^\d.]', '', raw))
+    except ValueError:
+        return None
+    mb = num * 1000 if 'GB' in raw else num
+    if mb >= 12000: return '4K'
+    if mb >= 3000:  return '1080p'
+    if mb >= 1000:  return '720p'
+    if mb >= 300:   return '480p'
+    return None
+
+
+def _size_from_anchor(anchor):
+    m = SIZE_RE.search(anchor.get_text(' ', strip=True))
+    if m:
+        return m.group(1).replace(' ', '').upper()
+    sib = anchor.next_sibling
+    for _ in range(3):
+        if sib is None:
+            break
+        text = sib.get_text(' ', strip=True) if hasattr(sib, 'get_text') else str(sib)
+        m = SIZE_RE.search(text or '')
+        if m:
+            return m.group(1).replace(' ', '').upper()
+        sib = getattr(sib, 'next_sibling', None)
+    return ''
+
+
+# ---------- format ----------
+
 def detect_format(text):
-    t = text.lower()
+    t = (text or '').lower()
     for label, pat in FORMAT_PATTERNS:
         if re.search(pat, t):
             return label
     return 'HD'
 
+
+# ---------- thread parse ----------
 
 def parse_thread(tid, url, html, origin):
     soup = BeautifulSoup(html, 'html.parser')
@@ -271,7 +389,10 @@ def parse_thread(tid, url, html, origin):
 
     poster = find_poster(soup, origin)
     downloads = extract_downloads(soup)
-    blob = ' '.join((d.get('langs', '') + ' ' + d.get('header', '')) for d in downloads)
+    blob = ' '.join(
+        (str(d.get('langs') or '') + ' ' + str(d.get('header') or ''))
+        for d in downloads
+    )
     langs = normalize_langs(blob) or normalize_langs(title)
 
     return {
@@ -285,67 +406,61 @@ def parse_thread(tid, url, html, origin):
     }
 
 
+# ---------- downloads ----------
+
 def extract_downloads(soup):
     downloads, seen = [], set()
+
     for mg in soup.select('a[href^="magnet:"]'):
         href = mg.get('href', '')
         if not href or href in seen:
             continue
         seen.add(href)
 
+        size = _size_from_anchor(mg)
+        langs = _langs_from_anchor(mg)
+
+        # tier resolution, in preference order:
+        #   1) nearest single-tier ancestor        (most reliable — per-link <p>)
+        #   2) previous sibling heading            (TamilMV alt layout)
+        #   3) size heuristic                      (last resort)
+        tier = _tier_from_ancestors(mg)
+        if not tier:
+            tier = _tier_from_prev_sibling(mg)
+        if not tier:
+            tier = _tier_from_size(size)
+
+        fmt = detect_format(' '.join(filter(None, [tier or '', size])))
+        quality = tier or ''
+
+        # row container for torrent / direct sibling anchors
         row = mg
-        for _ in range(6):
-            if row.parent and row.parent.name in ('p', 'div', 'article'):
+        for _ in range(4):
+            if row.parent and getattr(row.parent, 'name', None) in ('p', 'div', 'article', 'td'):
                 row = row.parent
             else:
                 break
-
-        header = ''
-        node = mg
-        for _ in range(10):
-            if node.previous_sibling:
-                node = node.previous_sibling
-            elif node.parent:
-                node = node.parent
-            else:
-                break
-            txt = node.get_text(' ', strip=True) if hasattr(node, 'get_text') else str(node)
-            if re.search(r'\b(1080p|720p|480p|2160p|4K|BR-?Rip|Blu-?Ray|WEB-?DL|HD-?Rip)\b', txt, re.I) \
-               and re.search(r'\b\d+(\.\d+)?\s?(GB|MB)\b', txt, re.I):
-                header = txt.strip()
-                break
-
-        quality = size = langs = ''
-        if header:
-            qm = re.search(r'\b(2160p|1080p|720p|480p|4K|BR-?Rip|Blu-?Ray|WEB-?DL|HD-?Rip|HDRip)\b', header, re.I)
-            sm = re.search(r'\b(\d+(?:\.\d+)?\s?(?:GB|MB))\b', header, re.I)
-            lm = re.search(r'\[([^\]]*(?:Tamil|Hindi|Telugu|Malayalam|Kannada|Eng|Tam|Hin|Tel)[^\]]*)\]', header, re.I)
-            quality = qm.group(1) if qm else ''
-            size    = sm.group(1) if sm else ''
-            langs   = lm.group(1) if lm else ''
-
-        fmt = detect_format(header or quality or '')
-        tier = '720p'
-        if re.search(r'2160|4k', quality, re.I): tier = '4K'
-        elif re.search(r'1440|2k', quality, re.I): tier = '2K'
-        elif re.search(r'1080', quality): tier = '1080p'
-        elif re.search(r'720', quality): tier = '720p'
-        elif re.search(r'480', quality): tier = '480p'
 
         torrent_url = direct_url = None
         if hasattr(row, 'find_all'):
             for a in row.find_all('a'):
                 txt = a.get_text(' ', strip=True)
-                hh  = a.get('href', '')
+                hh = a.get('href', '')
                 if not torrent_url and (hh.endswith('.torrent') or 'attachment.php' in hh):
                     torrent_url = hh
                 if 'DIRECT LINK' in txt.upper() and not direct_url:
                     direct_url = hh
 
         downloads.append({
-            'quality': quality, 'size': size, 'langs': langs,
-            'header': header, 'format': fmt, 'tier': tier,
-            'magnet': href, 'torrent_url': torrent_url, 'direct_url': direct_url,
+            'quality':     quality,
+            'size':        size,
+            'langs':       langs,
+            'header':      '',
+            'format':      fmt,
+            'tier':        tier,
+            'magnet':      href,
+            'torrent_url': torrent_url,
+            'direct_url':  direct_url,
         })
 
     order = {'4K': 0, '2K': 1, '1080p': 2, '720p': 3, '480p': 4}
@@ -387,7 +502,7 @@ def main():
     errors = 0
     poster_changed = 0
 
-    for tid, url in todo:
+    for tid, url in todo[:MAX_T]:
         try:
             page = sess.get(url, timeout=25)
             if page.status_code != 200:
@@ -395,12 +510,10 @@ def main():
                 errors += 1
                 continue
 
-                        rec = parse_thread(tid, url, page.text, origin)
+            rec = parse_thread(tid, url, page.text, origin)
 
-            # Skip if no download links at all
             if not rec['downloads']:
                 print(f'  [-] {tid}: no downloads, skipping')
-                # If already in DB, delete it
                 if tid in existing:
                     sb.table('movies').delete().eq('topic_id', tid).execute()
                     print(f'  [x] {tid}: removed from DB')
@@ -429,14 +542,14 @@ def main():
                 row['poster_url'] = prior['poster_url']
 
             sb.table('movies').upsert(row, on_conflict='topic_id').execute()
-            print(f'[+] {tid}  poster={"yes" if rec["poster_url"] else "no"}  dls={len(rec["downloads"])}')
+            print(f'[+] {tid}  poster={"yes" if rec["poster_url"] else "no"}  dls={len(rec["downloads"])}  tiers={sorted({d["tier"] for d in rec["downloads"] if d["tier"]})}')
             processed += 1
             time.sleep(0.4)
         except Exception as e:
             print(f'  [!] {tid}: {e}', file=sys.stderr)
             errors += 1
 
-    print(f'[+] {processed}/{min(len(todo), MAX_T)} processed · {errors} errors · {poster_changed} posters updated')
+    print(f'[+] {processed} processed · {errors} errors · {poster_changed} posters updated')
 
 
 if __name__ == '__main__':
