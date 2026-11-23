@@ -91,7 +91,7 @@ export default function MovieGrid() {
           <span style={{ color: THEME.accent, fontWeight: 700, fontSize: 18 }}>
             {total === null ? '—' : total.toLocaleString()}
           </span>{' '}
-          titles indexed
+          Movies & Series Available
         </div>
         <a
           href={MODDED_APPS_URL}
