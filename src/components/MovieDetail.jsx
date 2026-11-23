@@ -21,6 +21,38 @@ const THEME = {
 
 const PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 150'%3E%3Crect fill='%231c2128' width='100' height='150'/%3E%3C/svg%3E";
 
+// --- tier normalization -----------------------------------------------------
+// Accept "4K", "2160p", "4k uhd", "UHD", "1080P", "1080", etc.
+// Return canonical tier string, or null if unparseable.
+const TIER_ALIASES = [
+  [/^(4k|2160p?|uhd)$/i, '4K'],
+  [/^(2k|1440p?|qhd)$/i, '2K'],
+  [/^1080p?$/i, '1080p'],
+  [/^720p?$/i, '720p'],
+  [/^(480p?|sd)$/i, '480p'],
+];
+
+function normalizeTier(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  for (const [re, canon] of TIER_ALIASES) if (re.test(s)) return canon;
+  // fallback: scrape the first resolution token out of a free-form string
+  const m = s.match(/\b(2160|1440|1080|720|480)p?\b/i) || s.match(/\b(4k|2k)\b/i);
+  if (!m) return null;
+  return normalizeTier(m[0]);
+}
+
+// Parse a title like "[4K, 1080p & 720p]" into a Set of canonical tiers.
+// Used as a last-resort hint when d.tier is empty — but ONLY if the entry has
+// no own tier, and only to *label* a single link as multi-tier. We do not split
+// one link into three links; we label it "Multi" and group by the best tier.
+function tiersFromTitle(title) {
+  if (!title) return [];
+  const m = title.match(/\[([^\]]*(?:p|K)[^\]]*)\]/i);
+  if (!m) return [];
+  return m[1].split(/[,&]/).map(s => normalizeTier(s.trim())).filter(Boolean);
+}
+
 export default function MovieDetail() {
   const { id } = useParams();
   const [movie, setMovie] = useState(null);
@@ -46,15 +78,23 @@ export default function MovieDetail() {
   );
 
   const dls = Array.isArray(movie.downloads) ? movie.downloads : [];
-  const groups = {};
+  const titleHint = tiersFromTitle(movie.title);
+  const groups = Object.fromEntries(TIERS.map(t => [t, []]));
   const unknown = [];
+
   dls.forEach(d => {
-    if (d.tier) {
-      (groups[d.tier] ||= []).push(d);
-    } else {
-      unknown.push(d);
-    }
+    // 1) canonicalize the link's own tier
+    let t = normalizeTier(d.tier) || normalizeTier(d.format);
+    // 2) if still missing, and the movie title advertises exactly one tier, adopt it.
+    //    If the title advertises multiple tiers and the link has none, we cannot
+    //    guess — route to "Other" so the operator can fix the source data.
+    if (!t && titleHint.length === 1) t = titleHint[0];
+    // 3) still missing but has a size? try size-implied tier (rough heuristic)
+    if (!t) t = tierFromSize(d.size);
+    if (t && groups[t]) groups[t].push(d);
+    else unknown.push(d);
   });
+
   const langs = movie.languages || [];
 
   return (
@@ -93,24 +133,22 @@ export default function MovieDetail() {
         <>
           {TIERS.map(tier => {
             const rows = groups[tier];
-            if (!rows || !rows.length) return null;
+            if (!rows.length) return null;
             const col = TIER_COLOR[tier] || TIER_COLOR['720p'];
             return (
-              <div key={tier}>
-                <div style={{ marginBottom: 8 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                    <span style={{
-                      padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 800,
-                      background: col.bg, color: col.fg, border: `1px solid ${col.border}`,
-                    }}>{tier}</span>
-                    <span style={{ fontSize: 12, color: THEME.muted }}>
-                      {TIER_LABEL[tier]} · {rows.length} option{rows.length > 1 ? 's' : ''}
-                    </span>
-                  </div>
-                  {rows.map((d, i) => (
-                    <DownloadRow key={i} d={d} movie={movie} />
-                  ))}
+              <div key={tier} style={{ marginBottom: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                  <span style={{
+                    padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 800,
+                    background: col.bg, color: col.fg, border: `1px solid ${col.border}`,
+                  }}>{tier}</span>
+                  <span style={{ fontSize: 12, color: THEME.muted }}>
+                    {TIER_LABEL[tier]} · {rows.length} option{rows.length > 1 ? 's' : ''}
+                  </span>
                 </div>
+                {rows.map((d, i) => (
+                  <DownloadRow key={i} d={d} movie={movie} />
+                ))}
                 <AdBlock />
               </div>
             );
@@ -130,6 +168,7 @@ export default function MovieDetail() {
               {unknown.map((d, i) => (
                 <DownloadRow key={`o${i}`} d={d} movie={movie} />
               ))}
+              <AdBlock />
             </div>
           )}
         </>
@@ -193,4 +232,17 @@ function AdBlock() {
       color: THEME.muted, fontSize: 10, fontWeight: 600, letterSpacing: 2, textTransform: 'uppercase',
     }}>Advertisement</div>
   );
-                }
+}
+
+// rough size → tier heuristic, used only when tier and format are both empty
+function tierFromSize(size) {
+  if (!size) return null;
+  const m = String(size).match(/([\d.]+)\s*(GB|MB)/i);
+  if (!m) return null;
+  const v = parseFloat(m[1]) * (/GB/i.test(m[2]) ? 1000 : 1);
+  if (v >= 15000) return '4K';
+  if (v >= 7000)  return '1080p';
+  if (v >= 1500)  return '720p';
+  if (v >= 400)   return '480p';
+  return null;
+}
