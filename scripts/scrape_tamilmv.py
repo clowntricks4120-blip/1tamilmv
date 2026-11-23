@@ -395,7 +395,16 @@ def main():
                 errors += 1
                 continue
 
-            rec = parse_thread(tid, url, page.text, origin)
+                        rec = parse_thread(tid, url, page.text, origin)
+
+            # Skip if no download links at all
+            if not rec['downloads']:
+                print(f'  [-] {tid}: no downloads, skipping')
+                # If already in DB, delete it
+                if tid in existing:
+                    sb.table('movies').delete().eq('topic_id', tid).execute()
+                    print(f'  [x] {tid}: removed from DB')
+                continue
 
             row = {
                 'topic_id':       rec['topic_id'],
