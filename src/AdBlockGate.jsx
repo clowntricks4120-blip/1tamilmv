@@ -4,8 +4,6 @@ import './AdBlockGate.css';
 
 const ADMIN_PATH = '/admin';
 
-// Cosmetic blocking test. This cannot reliably identify every browser, DNS,
-// extension, or network-level blocker. A blocked ad request alone is not proof.
 function checkOnce() {
   return new Promise((resolve) => {
     const names = ['adsbox ad-banner ad-unit', 'advertisement ad-container'];
@@ -17,7 +15,6 @@ function checkOnce() {
       document.body.appendChild(el);
       return el;
     });
-    // Give filter styles time to apply before measuring.
     window.setTimeout(() => {
       let blocked = false;
       try {
@@ -25,21 +22,15 @@ function checkOnce() {
           if (!el.isConnected) return true;
           const cs = window.getComputedStyle(el);
           const r = el.getBoundingClientRect();
-          return cs.display === 'none' || cs.visibility === 'hidden' ||
-            cs.opacity === '0' || r.width === 0 || r.height === 0;
+          return cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0' || r.width === 0 || r.height === 0;
         });
-      } catch {
-        blocked = false; // Fail open on browser errors, not as proof of blocking.
-      } finally {
-        baits.forEach((el) => el.remove());
-      }
+      } catch { blocked = false; } finally { baits.forEach((el) => el.remove()); }
       resolve(blocked);
     }, 300);
   });
 }
 
 async function checkAdBlocking() {
-  // Two passes reduce transient false negatives; neither is conclusive.
   const first = await checkOnce();
   if (first) return true;
   return checkOnce();
@@ -48,42 +39,59 @@ async function checkAdBlocking() {
 export default function AdBlockGate({ children }) {
   const [status, setStatus] = useState('checking');
   const [attempt, setAttempt] = useState(0);
-  const admin = window.location.pathname === ADMIN_PATH ||
-    window.location.pathname.startsWith(ADMIN_PATH + '/');
-
-  const retry = useCallback(() => {
-    setStatus('checking');
-    setAttempt((n) => n + 1);
-  }, []);
+  const isAdmin = window.location.pathname === ADMIN_PATH || window.location.pathname.startsWith(ADMIN_PATH + '/');
+  const retry = useCallback(() => { setStatus('checking'); setAttempt((n) => n + 1); }, []);
 
   useEffect(() => {
-    if (admin) return;
+    if (isAdmin) return;
     let cancelled = false;
+    setStatus('checking');
     checkAdBlocking()
       .then((blocked) => { if (!cancelled) setStatus(blocked ? 'blocked' : 'allowed'); })
       .catch(() => { if (!cancelled) setStatus('allowed'); });
     return () => { cancelled = true; };
-  }, [admin, attempt]);
+  }, [isAdmin, attempt]);
 
-  if (admin || status === 'allowed') return children;
+  if (isAdmin || status === 'allowed') return children;
 
   return (
-    <div className="ct-gate-screen">
-      <section className="ct-gate-card" role="status" aria-live="polite">
-        <div className="ct-gate-icon"><ShieldAlert size={30} aria-hidden="true" /></div>
+    <div className="abg-screen">
+      <div className="abg-card">
+        <div className="abg-icon-wrap">
+          <ShieldAlert size={32} aria-hidden="true" />
+        </div>
+
         {status === 'checking' ? (
-          <><h1>Checking your browser</h1><p>Please wait a moment…</p><div className="ct-gate-spinner" aria-label="Checking" /></>
+          <>
+            <h1 className="abg-title">Checking your browser…</h1>
+            <p className="abg-desc">Please wait a moment.</p>
+            <div className="abg-spinner" aria-label="Checking" />
+          </>
         ) : (
           <>
-            <h1>Ad Blocker Detected</h1>
-            <p>Advertisements help keep 1TamilMV free. Please disable ad blocking for this website, then try again.</p>
-            <button type="button" className="ct-gate-retry" onClick={retry}>
-              <RefreshCw size={18} aria-hidden="true" /> I've Disabled Ad Blocker — Retry
+            <h1 className="abg-title">Ad Blocker Detected</h1>
+            <p className="abg-desc">
+              1TamilMV is <strong>100% free</strong> — ads keep it running.<br />
+              Please <strong>disable your ad blocker</strong> for this site, then click Retry.
+            </p>
+
+            <div className="abg-steps">
+              <div className="abg-step"><span className="abg-num">1</span>Click your adblocker icon in the browser toolbar</div>
+              <div className="abg-step"><span className="abg-num">2</span>Pause or disable it for <strong>this site</strong></div>
+              <div className="abg-step"><span className="abg-num">3</span>Click the Retry button below</div>
+            </div>
+
+            <button type="button" className="abg-btn" onClick={retry}>
+              <RefreshCw size={16} aria-hidden="true" />
+              I've Disabled It — Retry
             </button>
-            <small>If you already disabled it, check your browser's built-in protection or DNS filtering and retry.</small>
+
+            <p className="abg-note">
+              Using a DNS blocker or browser shield? Disable it for this domain too.
+            </p>
           </>
         )}
-      </section>
+      </div>
     </div>
   );
 }
