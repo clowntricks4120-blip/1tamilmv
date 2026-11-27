@@ -63,16 +63,6 @@ function tierFromSize(size) {
   return null;
 }
 
-/* Extract file size from download object — tries multiple field names */
-function getSize(d) {
-  // Try all known field names where size might live
-  const raw = d.size || d.filesize || d.file_size || d.fileSize || d.header || '';
-  if (!raw) return null;
-  // Extract something like "1.4GB", "700MB", "8.5 GB"
-  const m = String(raw).match(/[\d.]+\s*(?:GB|MB|TB)/i);
-  return m ? m[0].replace(/\s+/, '') : null;
-}
-
 export default function MovieDetail() {
   const { id } = useParams();
   const [movie, setMovie] = useState(null);
@@ -94,7 +84,7 @@ export default function MovieDetail() {
   );
 
   if (!movie) return (
-    <div style={{ maxWidth: 900, margin: '0 auto', padding: 40, color: T.muted }}>Loading…</div>
+    <div style={{ maxWidth: 900, margin: '0 auto', padding: 40, color: T.muted }}>Loading...</div>
   );
 
   const dls = Array.isArray(movie.downloads) ? movie.downloads : [];
@@ -103,10 +93,9 @@ export default function MovieDetail() {
   const unknown = [];
 
   dls.forEach(d => {
-    // Always trust tier field first; format field is unreliable
-    let t = normalizeTier(d.tier);
+    let t = normalizeTier(d.tier) || normalizeTier(d.format);
     if (!t && titleHint.length === 1) t = titleHint[0];
-    if (!t) t = tierFromSize(getSize(d));
+    if (!t) t = tierFromSize(d.size);
     if (t && groups[t]) groups[t].push(d);
     else unknown.push(d);
   });
@@ -120,13 +109,8 @@ export default function MovieDetail() {
         ← Back
       </Link>
 
-      {/* Top ad — small mobile banner */}
-      <div style={{ marginBottom: 12 }}>
-        <AdSlot placement="detail-top" type="mobile" />
-      </div>
-
       {/* Hero: poster + info */}
-      <div style={{ display: 'flex', gap: 16, marginBottom: 16, padding: '14px 16px', background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12 }}>
+      <div style={{ display: 'flex', gap: 16, marginBottom: 20, padding: '14px 16px', background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12 }}>
         <img
           src={movie.poster_url || PLACEHOLDER}
           alt={movie.title}
@@ -148,18 +132,21 @@ export default function MovieDetail() {
         </div>
       </div>
 
+      {/* Top ad — responsive banner */}
+      <AdSlot placement="detail-top" type="responsive" />
+
       {dls.length === 0 ? (
         <div style={{ padding: 40, textAlign: 'center', color: T.muted }}>No downloads available.</div>
       ) : (
         <>
-          {TIERS.map((tier, tierIdx) => {
+          {TIERS.map(tier => {
             const rows = groups[tier];
             if (!rows.length) return null;
             const col = TIER_COLOR[tier] || TIER_COLOR['720p'];
             return (
-              <div key={tier} style={{ marginBottom: 16 }}>
+              <div key={tier} style={{ marginBottom: 20 }}>
                 {/* tier heading */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
                   <span style={{
                     padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 800,
                     background: col.bg, color: col.fg, border: `1px solid ${col.border}`,
@@ -171,81 +158,63 @@ export default function MovieDetail() {
 
                 {rows.map((d, i) => <DownloadRow key={i} d={d} movie={movie} />)}
 
-                {/* Small banner ad after every tier (mobile-friendly) */}
-                {tierIdx % 2 === 0 && (
-                  <div style={{ marginTop: 10 }}>
-                    <AdSlot placement={`detail-tier-${tier}`} type="mobile" />
-                  </div>
-                )}
+                {/* ad after each tier's download rows */}
+                <AdSlot placement={`detail-tier-${tier}`} type="rectangle" />
               </div>
             );
           })}
 
           {unknown.length > 0 && (
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
                 <span style={{
                   padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 800,
                   background: T.surface2, color: T.muted, border: `1px solid ${T.border}`,
                 }}>Other</span>
                 <span style={{ fontSize: 12, color: T.muted }}>
-                  {unknown.length} option{unknown.length > 1 ? 's' : ''}
+                  Unsorted · {unknown.length} option{unknown.length > 1 ? 's' : ''}
                 </span>
               </div>
               {unknown.map((d, i) => <DownloadRow key={`o${i}`} d={d} movie={movie} />)}
+              <AdSlot placement="detail-other" type="rectangle" />
             </div>
           )}
         </>
       )}
 
-      {/* Bottom ad — small banner */}
-      <AdSlot placement="detail-bottom" type="mobile" />
+      {/* Bottom ad */}
+      <AdSlot placement="detail-bottom" type="responsive" />
     </div>
   );
 }
 
 function DownloadRow({ d, movie }) {
   const langText = d.langs || (movie.languages || []).join(' + ') || '—';
-  const size = getSize(d);
-
   return (
     <div style={{
-      display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center',
+      display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center',
       padding: '10px 14px', borderRadius: 8, marginBottom: 6,
       border: `1px solid ${T.border}`, background: T.surface, fontSize: 13,
     }}>
-      {/* File size — prominent pill */}
+      {/* File size — prominent */}
       <span style={{
-        fontWeight: 700,
-        fontSize: 13,
-        color: size ? '#15803d' : T.muted,
-        background: size ? '#dcfce7' : T.surface2,
-        padding: '3px 10px',
-        borderRadius: 20,
-        border: `1px solid ${size ? '#bbf7d0' : T.border}`,
-        minWidth: 54,
-        textAlign: 'center',
-        flexShrink: 0,
-      }}>{size || '—'}</span>
-
-      {/* Quality badge if available */}
-      {d.quality && (
-        <span style={{
-          fontSize: 11, fontWeight: 600, padding: '3px 8px',
-          borderRadius: 20, background: T.accentBg, color: T.accent,
-          border: `1px solid ${T.accentBdr}`,
-        }}>{d.quality}</span>
-      )}
+        fontWeight: 800, minWidth: 68, fontSize: 13,
+        color: d.size ? T.text : T.muted,
+        background: d.size ? T.surface2 : 'transparent',
+        padding: d.size ? '3px 8px' : '0',
+        borderRadius: 6,
+        border: d.size ? `1px solid ${T.border}` : 'none',
+      }}>{d.size || '—'}</span>
 
       {/* Audio/language */}
-      <span style={{ flex: 1, minWidth: 100, color: T.text, fontSize: 12 }}>
-        <span style={{ color: T.muted, marginRight: 4 }}>🔊</span>
+      <span style={{ flex: 1, minWidth: 130, color: T.text }}>
+        <span style={{ fontSize: 10, color: T.muted, textTransform: 'uppercase', marginRight: 6 }}>Audio</span>
         {langText}
       </span>
 
       {/* Download buttons */}
       <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {d.magnet      && <DLBtn href={d.magnet}      kind="magnet">MAGNET</DLBtn>}
+        {d.magnet     && <DLBtn href={d.magnet}      kind="magnet">MAGNET</DLBtn>}
         {d.torrent_url && <DLBtn href={d.torrent_url} kind="torrent">.TORRENT</DLBtn>}
         {d.direct_url  && <DLBtn href={d.direct_url}  kind="direct" external>DIRECT</DLBtn>}
       </span>
