@@ -61,8 +61,7 @@ function tierFromSize(size) {
   if (v >= 15000) return '4K';
   if (v >= 7000)  return '1080p';
   if (v >= 1500)  return '720p';
-  if (v >= 400)   return '480p';
-  return null;
+  return '480p'; // anything smaller: 480p (covers 700MB, 400MB, 250MB etc.)
 }
 
 /* Safely parse downloads — handles both array and JSON string */
@@ -279,9 +278,11 @@ export default function MovieDetail() {
               <div key={tier} style={{ marginBottom: 8 }}>
                 {/* Tier heading */}
                 {(() => {
-                  const tierSizeVal = tierSizeMap[tier] || null;
-                  const tierAudio = rows.find(r => r.audio)?.audio || '';
-                  const tierBitrate = rows.find(r => r.bitrate)?.bitrate || '';
+                  // Use first row's real size (from magnet) — most accurate
+                  const firstRowSize = getSize(rows[0]) || (tierSizeLists[tier] || [])[0] || tierSizeMap[tier] || null;
+                  // Audio from DB or parse from first row's magnet
+                  const tierAudio   = rows.find(r => r.audio)?.audio   || audioFromMagnet(rows[0]?.magnet)   || '';
+                  const tierBitrate = rows.find(r => r.bitrate)?.bitrate || bitrateFromMagnet(rows[0]?.magnet) || '';
                   const audioPart = [tierAudio, tierBitrate].filter(Boolean).join(' · ');
                   return (
                     <div style={{
@@ -300,9 +301,9 @@ export default function MovieDetail() {
                           {` · ${rows.length} option${rows.length > 1 ? 's' : ''}`}
                         </span>
                       </div>
-                      {tierSizeVal && (
+                      {firstRowSize && (
                         <span style={{ fontSize: 14, fontWeight: 700, color: col.fg }}>
-                          {tierSizeVal}
+                          {firstRowSize}
                         </span>
                       )}
                     </div>
