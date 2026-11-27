@@ -418,14 +418,81 @@ def detect_bitrate(text):
     return ''
 
 
+def _heading_text_for_anchor(anchor):
+    """
+    Find the heading <strong> for this download link on 1TamilMV.
+
+    1TamilMV puts everything in ONE large <p> block, with <br> separators:
+      <strong>Movie - 4K SDR - HEVC - (DD+5.1 - 640Kbps) - 15GB - ESub :</strong><br>
+      <strong><a href="...torrent">filename.torrent</a></strong><br>
+      <a class="skyblue-button" href="magnet:...">MAGNET</a><br>
+      <a class="download-button" href="...">DIRECT LINK</a><br>
+      <br>
+      <strong>Movie - 1080p - AVC - ... - 8.6GB - ESub :</strong><br>
+      ...
+
+    Strategy: walk backwards through previous siblings of the magnet anchor
+    (within the same parent container) looking for a <strong> element whose
+    text contains a size or looks like a heading (contains 'ESub' or 'kbps').
+    Stop at the previous magnet/DIRECT LINK anchor to avoid crossing groups.
+    """
+    # Walk backwards from the magnet anchor through siblings in same container
+    sib = anchor.previous_sibling
+    checked = 0
+    while sib is not None and checked < 20:
+        # Stop if we cross another magnet link or DIRECT LINK (new group)
+        if hasattr(sib, 'name') and sib.name == 'a':
+            href = sib.get('href', '')
+            if href.startswith('magnet:'):
+                break  # crossed into previous group
+            txt = sib.get_text(' ', strip=True).upper()
+            if 'DIRECT LINK' in txt:
+                pass  # these are ok, keep walking
+
+        if hasattr(sib, 'name') and sib.name == 'strong':
+            # Check if this is a heading <strong> (not a torrent link)
+            inner_a = sib.find('a')
+            if not inner_a:
+                # No link inside — this is the heading text
+                text = sib.get_text(' ', strip=True)
+                if len(text) > 20 and (SIZE_RE.search(text) or 'esub' in text.lower() or 'kbps' in text.lower()):
+                    return text
+            # else: it's a torrent filename link — skip
+
+        sib = sib.previous_sibling
+        checked += 1
+
+    # Fallback: walk up to parent, then search previous sibling <p>/<div>
+    node = anchor
+    for _ in range(5):
+        p = node.parent
+        if p is None:
+            break
+        if getattr(p, 'name', None) in ('p', 'div', 'li', 'td'):
+            node = p
+            break
+        node = p
+
+    sib = node
+    for _ in range(6):
+        try:
+            sib = sib.find_previous_sibling()
+        except AttributeError:
+            break
+        if sib is None:
+            break
+        if not hasattr(sib, 'get_text'):
+            continue
+        text = sib.get_text(' ', strip=True)
+        if len(text) > 30 and (SIZE_RE.search(text) or 'esub' in text.lower() or 'kbps' in text.lower()):
+            return text
+
+    return ''
+
+
 def _context_text_for_anchor(anchor, max_up=6):
-    """
-    Collect text from the anchor itself + nearest parent paragraph/div
-    that describes this specific download link. Used for codec/audio extraction.
-    Returns combined text string.
-    """
+    """Collect text from anchor + nearest parent paragraph."""
     parts = [anchor.get_text(' ', strip=True)]
-    # Also check the parent <p> or sibling text
     node = anchor
     for _ in range(max_up):
         node = node.parent
@@ -433,7 +500,6 @@ def _context_text_for_anchor(anchor, max_up=6):
             break
         text = node.get_text(' ', strip=True)
         parts.append(text)
-        # Stop once we have a paragraph with enough info
         if len(text) > 20:
             break
     return ' '.join(parts)
@@ -496,28 +562,38 @@ def extract_downloads(soup):
         if not tier:
             tier = _tier_from_size(size)
 
-        # Get context text for codec/audio/bitrate/size extraction
-        ctx = _context_text_for_anchor(mg)
+        # ── HEADING TEXT (most reliable source on 1TamilMV) ──────────────────
+        # Each download has a <strong> heading like:
+        # "Movie - 4K SDR - HEVC - (DD+5.1 - 640Kbps) - 15GB - ESub :"
+        # This is the sibling <strong> *before* the torrent/magnet links.
+        heading_text = _heading_text_for_anchor(mg)
 
-        # Try to extract size from the torrent filename in the magnet URI first
-        # e.g. dn=...+1080p+HEVC+3GB... is very reliable
+        # Also get magnet dn= and context as fallbacks
+        ctx = _context_text_for_anchor(mg)
         magnet_dn = ''
         dn_m = re.search(r'[?&]dn=([^&]+)', href)
         if dn_m:
             import urllib.parse
             magnet_dn = urllib.parse.unquote_plus(dn_m.group(1))
 
-        # Size: magnet filename > anchor text > sibling text
+        # Size: heading text (most reliable) > magnet dn= > anchor/sibling text
+        size_from_heading = ''
+        if heading_text:
+            sm = SIZE_RE.search(heading_text)
+            if sm:
+                size_from_heading = sm.group(1).replace(' ', '').upper()
+
         size_from_dn = ''
         if magnet_dn:
             sm = SIZE_RE.search(magnet_dn)
             if sm:
                 size_from_dn = sm.group(1).replace(' ', '').upper()
-        size = size_from_dn or size or ''
 
-        # Codec, audio, bitrate — from magnet filename first (most reliable), then ctx
-        search_text = magnet_dn or ctx
-        codec   = detect_codec(search_text)
+        size = size_from_heading or size_from_dn or size or ''
+
+        # Codec, audio, bitrate — heading text first, then magnet dn=, then ctx
+        search_text = heading_text or magnet_dn or ctx
+        codec   = detect_codec(search_text) or detect_codec(ctx)
         audio   = detect_audio(search_text) or detect_audio(ctx)
         bitrate = detect_bitrate(search_text) or detect_bitrate(ctx)
 
