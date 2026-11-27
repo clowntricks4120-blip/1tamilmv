@@ -96,35 +96,37 @@ function buildTierSizeMap(title) {
   if (!title) return {};
   const map = {};
 
-  // Pattern 1: explicit "TIER ... SIZEgb" pairs close together
-  // e.g. "1080p - 2.4GB", "720p - 1.4GB", "450MB" (no tier = 480p fallback)
   const TIER_RE = /\b(2160p|4k|uhd|1440p|2k|1080p|720p|480p|360p)\b/gi;
   const SIZE_RE_G = /\b(\d+(?:\.\d+)?)\s*(GB|MB|TB)\b/gi;
 
   const tiers = [], sizes = [];
   let m;
-  while ((m = TIER_RE.exec(title)) !== null)  tiers.push({ val: m[0].toUpperCase(), idx: m.index });
-  while ((m = SIZE_RE_G.exec(title)) !== null) sizes.push({ val: m[1] + m[2].toUpperCase(), idx: m.index });
+  while ((m = TIER_RE.exec(title)) !== null)
+    tiers.push({ canon: normalizeTier(m[0]), idx: m.index });
+  while ((m = SIZE_RE_G.exec(title)) !== null)
+    sizes.push({ val: m[1] + m[2].toUpperCase(), idx: m.index });
 
   if (!tiers.length || !sizes.length) return map;
 
-  // For each size, find the nearest tier before it
-  for (const sz of sizes) {
-    // find last tier that appears before this size
-    const before = tiers.filter(t => t.idx < sz.idx);
-    if (before.length) {
-      const nearest = before[before.length - 1];
-      const canon = normalizeTier(nearest.val);
-      if (canon && !map[canon]) map[canon] = sz.val;
-    }
-  }
+  // Simple positional zip: sort both by index, pair 1st tier with 1st size, 2nd with 2nd, etc.
+  // This handles "1080p & 720p - 2.4GB & 1.4GB" correctly:
+  //   tiers=[1080p@0, 720p@12], sizes=[2.4GB@17, 1.4GB@24]
+  //   → 1080p=2.4GB, 720p=1.4GB ✓
+  const sortedTiers = [...tiers].sort((a, b) => a.idx - b.idx);
+  const sortedSizes = [...sizes].sort((a, b) => a.idx - b.idx);
 
-  // If sizes > assigned tiers, zip remaining sizes to remaining tiers positionally
-  const assignedTiers = new Set(Object.keys(map));
-  const unassignedTiers = tiers.map(t => normalizeTier(t.val)).filter(t => t && !assignedTiers.has(t));
-  const assignedSizes = new Set(Object.values(map));
-  const unassignedSizes = sizes.map(s => s.val).filter(s => !assignedSizes.has(s));
-  unassignedTiers.forEach((t, i) => { if (unassignedSizes[i] && !map[t]) map[t] = unassignedSizes[i]; });
+  // Deduplicate tiers (keep first occurrence of each canonical tier)
+  const seenTiers = new Set();
+  const uniqueTiers = sortedTiers.filter(t => {
+    if (!t.canon || seenTiers.has(t.canon)) return false;
+    seenTiers.add(t.canon);
+    return true;
+  });
+
+  // Zip: 1st unique tier → 1st size, 2nd → 2nd, etc.
+  uniqueTiers.forEach((t, i) => {
+    if (sortedSizes[i]) map[t.canon] = sortedSizes[i].val;
+  });
 
   return map;
 }
