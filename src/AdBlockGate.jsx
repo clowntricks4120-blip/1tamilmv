@@ -4,67 +4,54 @@ import './AdBlockGate.css';
 
 const ADMIN_PATH = '/admin';
 
-/* ── Detection method 1: bait-div cosmetic filter ── */
-function baitCheck() {
+/* Bait-div cosmetic detection only — no network requests that can false-positive */
+function checkAdBlocking() {
   return new Promise((resolve) => {
-    const classes = [
+    // Create several divs with class names adblockers always hide
+    const baits = [
       'adsbox',
       'ad-banner',
-      'ad-unit',
+      'adsbygoogle',
       'advertisement',
       'ad-container',
-      'adsbygoogle',
       'advert',
-    ];
-    const baits = classes.map((cls) => {
+      'ad-unit',
+    ].map((cls) => {
       const el = document.createElement('div');
       el.className = cls;
       el.setAttribute('aria-hidden', 'true');
       el.style.cssText =
-        'position:fixed;left:-9999px;top:0;width:1px;height:1px;pointer-events:none;';
+        'position:fixed;left:-9999px;top:0;width:1px;height:1px;pointer-events:none;opacity:1;display:block;';
       document.body.appendChild(el);
       return el;
     });
 
+    // Wait 600ms for adblocker CSS rules to apply
     setTimeout(() => {
       let blocked = false;
       try {
         blocked = baits.some((el) => {
+          // Removed from DOM entirely = blocked
           if (!document.body.contains(el)) return true;
           const cs = window.getComputedStyle(el);
           return (
             cs.display === 'none' ||
             cs.visibility === 'hidden' ||
             cs.opacity === '0' ||
-            parseInt(cs.maxHeight || '1', 10) === 0
+            cs.maxHeight === '0px' ||
+            cs.overflow === 'hidden' && cs.height === '0px'
           );
         });
       } catch {
-        blocked = false;
+        blocked = false; // On any error, allow — don't punish real users
       } finally {
-        baits.forEach((el) => el.parentNode && el.parentNode.removeChild(el));
+        baits.forEach((el) => {
+          if (document.body.contains(el)) document.body.removeChild(el);
+        });
       }
       resolve(blocked);
-    }, 500);
+    }, 600);
   });
-}
-
-/* ── Detection method 2: try fetching a known ad URL ── */
-function networkCheck() {
-  return new Promise((resolve) => {
-    const img = new Image();
-    const timeout = setTimeout(() => { img.src = ''; resolve(true); }, 3000);
-    img.onload = () => { clearTimeout(timeout); resolve(false); };
-    img.onerror = () => { clearTimeout(timeout); resolve(true); };
-    // Use a URL pattern adblockers always block
-    img.src = 'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?' + Date.now();
-  });
-}
-
-/* ── Run both checks; blocked if either says blocked ── */
-async function checkAdBlocking() {
-  const [bait, network] = await Promise.all([baitCheck(), networkCheck()]);
-  return bait || network;
 }
 
 export default function AdBlockGate({ children }) {
@@ -89,17 +76,14 @@ export default function AdBlockGate({ children }) {
         if (!cancelled) setStatus(blocked ? 'blocked' : 'allowed');
       })
       .catch(() => {
-        // On error default to allowed so legit users aren't blocked
+        // Error = allow, never false-block real users
         if (!cancelled) setStatus('allowed');
       });
     return () => { cancelled = true; };
   }, [isAdmin, attempt]);
 
-  /* Always block render until check is done */
-  if (isAdmin) return children;
-  if (status === 'allowed') return children;
+  if (isAdmin || status === 'allowed') return children;
 
-  /* Checking or blocked — show gate */
   return (
     <div className="abg-screen">
       <div className="abg-card">
