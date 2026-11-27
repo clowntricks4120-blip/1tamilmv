@@ -76,20 +76,18 @@ function parseDownloads(raw) {
   return [];
 }
 
-/* Extract size from any field it might live in */
+/* Extract size from any field — searches ALL string values in the object */
 function getSize(d) {
   if (!d) return null;
-  // Try every possible field name
-  const candidates = [d.size, d.filesize, d.file_size, d.fileSize, d.header];
-  for (const v of candidates) {
-    if (!v) continue;
-    const s = String(v).trim();
-    if (!s || s === 'null' || s === 'undefined') continue;
-    // Match patterns like "8.5GB", "700 MB", "1.4 GB"
-    const m = s.match(/([\d.]+)\s*(GB|MB|TB)/i);
-    if (m) return m[0].replace(/\s+/g, '');
-    // If the whole string looks like a size already (e.g. "8.5GB")
-    if (/^\d[\d.]*\s*(GB|MB|TB)$/i.test(s)) return s;
+  // Check every value in the download object for a size pattern
+  const allValues = Object.values(d);
+  for (const v of allValues) {
+    if (!v || typeof v !== 'string') continue;
+    const s = v.trim();
+    if (!s || s === 'null') continue;
+    // Match "8.5GB", "700MB", "1.4 GB", "700 MB", "8.50GB" etc
+    const m = s.match(/\b([\d]+(?:\.\d+)?)\s*(GB|MB|TB)\b/i);
+    if (m) return m[1] + m[2].toUpperCase();
   }
   return null;
 }
@@ -127,7 +125,7 @@ export default function MovieDetail() {
   );
 
   const dls = parseDownloads(movie.downloads);
-  const titleHint = tiersFromTitle(movie.title);
+const titleHint = tiersFromTitle(movie.title);
   const groups = Object.fromEntries(TIERS.map(t => [t, []]));
   const unknown = [];
 
