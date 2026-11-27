@@ -76,16 +76,25 @@ function parseDownloads(raw) {
   return [];
 }
 
-/* Extract size from d.size field (scraper saves it there) */
+/* Extract size from d.size field, fallback to tier-based estimate */
 function getSize(d) {
   if (!d) return null;
+  // Try real size field first
   const v = d.size;
-  if (!v) return null;
-  const s = String(v).trim();
-  if (!s || s === '' || s === 'null' || s === 'undefined') return null;
-  // Already formatted like "1.4GB" or "700MB"
-  const m = s.match(/([\d]+(?:\.\d+)?)\s*(GB|MB|TB)/i);
-  if (m) return m[1] + m[2].toUpperCase();
+  if (v) {
+    const s = String(v).trim();
+    if (s && s !== '' && s !== 'null' && s !== 'undefined') {
+      const m = s.match(/([\d]+(?:\.\d+)?)\s*(GB|MB|TB)/i);
+      if (m) return m[1] + m[2].toUpperCase();
+    }
+  }
+  // Fallback: estimate from tier
+  const tier = (d.tier || '').trim();
+  if (tier === '4K')    return '~15–25GB';
+  if (tier === '2K')    return '~8–12GB';
+  if (tier === '1080p') return '~1.5–4GB';
+  if (tier === '720p')  return '~700–1.4GB';
+  if (tier === '480p')  return '~300–700MB';
   return null;
 }
 
