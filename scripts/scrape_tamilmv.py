@@ -348,11 +348,14 @@ def _tier_from_size(size_str):
 
 
 def _size_from_anchor(anchor):
+    # 1) size in anchor text itself e.g. "Tamil 1080p 1.4GB"
     m = SIZE_RE.search(anchor.get_text(' ', strip=True))
     if m:
         return m.group(1).replace(' ', '').upper()
+
+    # 2) next siblings (up to 5)
     sib = anchor.next_sibling
-    for _ in range(3):
+    for _ in range(5):
         if sib is None:
             break
         text = sib.get_text(' ', strip=True) if hasattr(sib, 'get_text') else str(sib)
@@ -360,6 +363,29 @@ def _size_from_anchor(anchor):
         if m:
             return m.group(1).replace(' ', '').upper()
         sib = getattr(sib, 'next_sibling', None)
+
+    # 3) previous siblings (size label before magnet link)
+    sib = anchor.previous_sibling
+    for _ in range(5):
+        if sib is None:
+            break
+        text = sib.get_text(' ', strip=True) if hasattr(sib, 'get_text') else str(sib)
+        m = SIZE_RE.search(text or '')
+        if m:
+            return m.group(1).replace(' ', '').upper()
+        sib = getattr(sib, 'previous_sibling', None)
+
+    # 4) walk UP to parent/grandparent and search their full text
+    node = anchor
+    for _ in range(5):
+        node = node.parent
+        if node is None or not hasattr(node, 'get_text'):
+            break
+        text = node.get_text(' ', strip=True)
+        m = SIZE_RE.search(text or '')
+        if m:
+            return m.group(1).replace(' ', '').upper()
+
     return ''
 
 

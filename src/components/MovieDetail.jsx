@@ -76,31 +76,16 @@ function parseDownloads(raw) {
   return [];
 }
 
-/* Extract size — only from known size fields, not URLs or magnets */
+/* Extract size from d.size field (scraper saves it there) */
 function getSize(d) {
   if (!d) return null;
-  // Only check fields that are likely to hold a file size label
-  const SIZE_FIELDS = ['size', 'filesize', 'file_size', 'fileSize', 'filesz', 'sz'];
-  for (const key of SIZE_FIELDS) {
-    const v = d[key];
-    if (!v) continue;
-    const s = String(v).trim();
-    if (!s || s === 'null' || s === 'undefined') continue;
-    const m = s.match(/^([\d]+(?:\.\d+)?)\s*(GB|MB|TB)$/i);
-    if (m) return m[1] + m[2].toUpperCase();
-  }
-  // Fallback: scan ALL string fields but skip URLs/magnets and long strings
-  for (const [key, v] of Object.entries(d)) {
-    if (!v || typeof v !== 'string') continue;
-    // Skip URL-like and magnet fields
-    if (/^(magnet|http|https|torrent|direct|url|link)/i.test(key)) continue;
-    if (v.startsWith('magnet:') || v.startsWith('http')) continue;
-    const s = v.trim();
-    // Only short strings can be a size label (e.g. "8.5GB", "700 MB")
-    if (s.length > 20) continue;
-    const m = s.match(/^([\d]+(?:\.\d+)?)\s*(GB|MB|TB)$/i);
-    if (m) return m[1] + m[2].toUpperCase();
-  }
+  const v = d.size;
+  if (!v) return null;
+  const s = String(v).trim();
+  if (!s || s === '' || s === 'null' || s === 'undefined') return null;
+  // Already formatted like "1.4GB" or "700MB"
+  const m = s.match(/([\d]+(?:\.\d+)?)\s*(GB|MB|TB)/i);
+  if (m) return m[1] + m[2].toUpperCase();
   return null;
 }
 
