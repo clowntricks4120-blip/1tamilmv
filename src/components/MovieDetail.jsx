@@ -76,14 +76,32 @@ function parseDownloads(raw) {
   return [];
 }
 
-/* Extract size from d.size field */
+const SIZE_RE = /([\d]+(?:\.\d+)?)\s*(GB|MB|TB)/i;
+
+/* Extract size from magnet URI dn= param (most reliable — real filename) */
+function sizeFromMagnet(magnet) {
+  if (!magnet) return null;
+  try {
+    const dn = new URLSearchParams(magnet.split('?')[1] || '').get('dn') || '';
+    const decoded = decodeURIComponent(dn).replace(/\+/g, ' ');
+    const m = decoded.match(SIZE_RE);
+    if (m) return m[1] + m[2].toUpperCase();
+  } catch { /* ignore */ }
+  return null;
+}
+
+/* Extract size — magnet dn > d.size field */
 function getSize(d) {
   if (!d) return null;
+  // 1. Try magnet URI filename first — always has the real per-file size
+  const fromMagnet = sizeFromMagnet(d.magnet);
+  if (fromMagnet) return fromMagnet;
+  // 2. Fall back to scraped size field
   const v = d.size;
   if (!v) return null;
   const s = String(v).trim();
   if (!s || s === 'null' || s === 'undefined') return null;
-  const m = s.match(/([\d]+(?:\.\d+)?)\s*(GB|MB|TB)/i);
+  const m = s.match(SIZE_RE);
   if (m) return m[1] + m[2].toUpperCase();
   return null;
 }
@@ -299,18 +317,53 @@ export default function MovieDetail() {
   );
 }
 
+/* Parse codec from magnet filename */
+function codecFromMagnet(magnet) {
+  if (!magnet) return '';
+  try {
+    const dn = decodeURIComponent((new URLSearchParams(magnet.split('?')[1] || '')).get('dn') || '').replace(/\+/g, ' ');
+    if (/\b(hevc|x265|h\.?265)\b/i.test(dn)) return 'x265';
+    if (/\b(avc|x264|h\.?264)\b/i.test(dn)) return 'x264';
+  } catch { /* ignore */ }
+  return '';
+}
+
+/* Parse audio from magnet filename */
+function audioFromMagnet(magnet) {
+  if (!magnet) return '';
+  try {
+    const dn = decodeURIComponent((new URLSearchParams(magnet.split('?')[1] || '')).get('dn') || '').replace(/\+/g, ' ');
+    if (/\b(dd\+5\.1|ddp5\.1|e-?ac-?3|eac3|atmos)\b/i.test(dn)) return 'DD+5.1';
+    if (/\b(dd5\.1|ac-?3)\b/i.test(dn)) return 'DD5.1';
+    if (/\bdts\b/i.test(dn)) return 'DTS';
+    if (/\baac\b/i.test(dn)) return 'AAC';
+  } catch { /* ignore */ }
+  return '';
+}
+
+/* Parse bitrate from magnet filename */
+function bitrateFromMagnet(magnet) {
+  if (!magnet) return '';
+  try {
+    const dn = decodeURIComponent((new URLSearchParams(magnet.split('?')[1] || '')).get('dn') || '').replace(/\+/g, ' ');
+    const m = dn.match(/\b(\d+)\s*kbps\b/i);
+    if (m) return m[1] + 'Kbps';
+  } catch { /* ignore */ }
+  return '';
+}
+
 function DownloadRow({ d, movie }) {
   const langText = d.langs || (movie.languages || []).join(' + ') || '—';
-  // Only use d.size — after FORCE_RESCAN each download has its own scraped size
-  // from the magnet filename. Never fall back to tier-level size (causes duplicates).
   const size = getSize(d) || null;
 
-  // Codec badge
-  const codec = d.codec || '';
-  const codecLabel = codec === 'HEVC' ? 'x265' : codec === 'AVC' ? 'x264' : codec || '';
+  // Codec: scraped field → magnet parse → ''
+  const rawCodec = d.codec || codecFromMagnet(d.magnet);
+  const codecLabel = rawCodec === 'HEVC' ? 'x265' : rawCodec === 'AVC' ? 'x264' : rawCodec;
 
-  // Audio line: "DD+5.1 · 640Kbps" or "AAC" etc.
-  const audioParts = [d.audio, d.bitrate].filter(Boolean);
+  // Audio: scraped field → magnet parse
+  const audio   = d.audio   || audioFromMagnet(d.magnet);
+  const bitrate = d.bitrate || bitrateFromMagnet(d.magnet);
+  const audioParts = [audio, bitrate].filter(Boolean);
   const audioLine = audioParts.join(' · ');
 
   return (
