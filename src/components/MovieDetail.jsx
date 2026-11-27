@@ -106,17 +106,19 @@ function getSize(d) {
   return null;
 }
 
-/* Parse all sizes from movie title and assign to tiers in order.
-   e.g. "[1080p & 720p - 2.4GB & 1.4GB | 480p - 450MB]"
-   Strategy: find all tier tokens and all size tokens in title order,
-   then zip them together positionally. */
-function buildTierSizeMap(title) {
-  if (!title) return {};
-  const map = {};
+/* Parse all sizes from movie title.
+   Returns:
+     tierSizeMap  — { '1080p': '6GB', '720p': '2.8GB', ... } (first size per tier, for header)
+     tierSizeLists — { '1080p': ['6GB','2.8GB'], '720p': ['1.4GB','950MB'], ... }
+       Built by splitting the title on tier tokens and collecting sizes in each segment.
+*/
+function buildTierSizeMaps(title) {
+  if (!title) return { tierSizeMap: {}, tierSizeLists: {} };
 
   const TIER_RE = /\b(2160p|4k|uhd|1440p|2k|1080p|720p|480p|360p)\b/gi;
   const SIZE_RE_G = /\b(\d+(?:\.\d+)?)\s*(GB|MB|TB)\b/gi;
 
+  // Collect all tier tokens with positions
   const tiers = [], sizes = [];
   let m;
   while ((m = TIER_RE.exec(title)) !== null)
@@ -124,16 +126,12 @@ function buildTierSizeMap(title) {
   while ((m = SIZE_RE_G.exec(title)) !== null)
     sizes.push({ val: m[1] + m[2].toUpperCase(), idx: m.index });
 
-  if (!tiers.length || !sizes.length) return map;
+  if (!tiers.length || !sizes.length) return { tierSizeMap: {}, tierSizeLists: {} };
 
-  // Simple positional zip: sort both by index, pair 1st tier with 1st size, 2nd with 2nd, etc.
-  // This handles "1080p & 720p - 2.4GB & 1.4GB" correctly:
-  //   tiers=[1080p@0, 720p@12], sizes=[2.4GB@17, 1.4GB@24]
-  //   → 1080p=2.4GB, 720p=1.4GB ✓
   const sortedTiers = [...tiers].sort((a, b) => a.idx - b.idx);
   const sortedSizes = [...sizes].sort((a, b) => a.idx - b.idx);
 
-  // Deduplicate tiers (keep first occurrence of each canonical tier)
+  // Deduplicate canonical tiers (keep first occurrence)
   const seenTiers = new Set();
   const uniqueTiers = sortedTiers.filter(t => {
     if (!t.canon || seenTiers.has(t.canon)) return false;
@@ -141,12 +139,41 @@ function buildTierSizeMap(title) {
     return true;
   });
 
-  // Zip: 1st unique tier → 1st size, 2nd → 2nd, etc.
+  // Find the index in sortedSizes where sizes start (after all tier tokens)
+  // Then assign sizes to tiers positionally
+  const tierSizeMap = {};
+  const tierSizeLists = {};
   uniqueTiers.forEach((t, i) => {
-    if (sortedSizes[i]) map[t.canon] = sortedSizes[i].val;
+    if (sortedSizes[i]) {
+      tierSizeMap[t.canon] = sortedSizes[i].val;
+    }
   });
 
-  return map;
+  // Build per-tier size lists by splitting title into segments between tier tokens
+  // e.g. "1080p & 720p - 6GB - 2.8GB - 1.4GB & 950MB"
+  // Find where sizes cluster after each tier token
+  // Strategy: assign each size to nearest preceding tier
+  const allTokens = [
+    ...uniqueTiers.map(t => ({ type: 'tier', canon: t.canon, idx: t.idx })),
+    ...sortedSizes.map(s => ({ type: 'size', val: s.val, idx: s.idx })),
+  ].sort((a, b) => a.idx - b.idx);
+
+  let currentTier = null;
+  for (const tok of allTokens) {
+    if (tok.type === 'tier') {
+      currentTier = tok.canon;
+      if (!tierSizeLists[currentTier]) tierSizeLists[currentTier] = [];
+    } else if (tok.type === 'size' && currentTier) {
+      tierSizeLists[currentTier].push(tok.val);
+    }
+  }
+
+  return { tierSizeMap, tierSizeLists };
+}
+
+// Keep old name as wrapper for backward compat
+function buildTierSizeMap(title) {
+  return buildTierSizeMaps(title).tierSizeMap;
 }
 
 export default function MovieDetail() {
@@ -182,7 +209,7 @@ export default function MovieDetail() {
   );
 
   const dls = parseDownloads(movie.downloads);
-  const tierSizeMap = buildTierSizeMap(movie.title);
+  const { tierSizeMap, tierSizeLists } = buildTierSizeMaps(movie.title);
   const titleHint = tiersFromTitle(movie.title);
   const groups = Object.fromEntries(TIERS.map(t => [t, []]));
   const unknown = [];
@@ -282,7 +309,10 @@ export default function MovieDetail() {
                   );
                 })()}
 
-                {rows.map((d, i) => <DownloadRow key={i} d={d} movie={movie} />)}
+                {rows.map((d, i) => {
+                  const sizeHint = (tierSizeLists[tier] || [])[i] || null;
+                  return <DownloadRow key={i} d={d} movie={movie} sizeHint={sizeHint} />;
+                })}
 
                 {/* Ad after EVERY tier */}
                 <div style={{ marginTop: 8, marginBottom: 16 }} onClick={e => e.stopPropagation()}>
@@ -300,7 +330,7 @@ export default function MovieDetail() {
                   background: T.surface2, color: T.muted, border: `1px solid ${T.border}`,
                 }}>Other</span>
               </div>
-              {unknown.map((d, i) => <DownloadRow key={`o${i}`} d={d} movie={movie} />)}
+              {unknown.map((d, i) => <DownloadRow key={`o${i}`} d={d} movie={movie} sizeHint={null} />)}
               <div style={{ marginTop: 8 }} onClick={e => e.stopPropagation()}>
                 <AdSlot placement="detail-other" type="mobile" />
               </div>
@@ -352,9 +382,11 @@ function bitrateFromMagnet(magnet) {
   return '';
 }
 
-function DownloadRow({ d, movie }) {
+function DownloadRow({ d, movie, sizeHint = null }) {
   const langText = d.langs || (movie.languages || []).join(' + ') || '—';
-  const size = getSize(d) || null;
+
+  // Size priority: magnet dn= parse > d.size from DB > positional title hint
+  const size = getSize(d) || sizeHint || null;
 
   // Codec: scraped field → magnet parse → ''
   const rawCodec = d.codec || codecFromMagnet(d.magnet);
