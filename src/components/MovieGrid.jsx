@@ -6,6 +6,7 @@ import AdSlot from '../AdUnits';
 const LANGS = ['All', 'Tamil', 'Telugu', 'Hindi', 'Malayalam', 'Kannada', 'English'];
 const FMT_ORDER = ['4K', '2K', '1080p', '720p', '480p', 'BluRay', 'WEB-DL', 'HD', 'TC', 'CAM'];
 const MODDED_APPS_URL = 'https://ct.clowntricks4120.workers.dev';
+const POPUP_URL = 'https://asiafilm.org/4/af8d33a9342f88de85fe6fb1cdd20009';
 const AD_EVERY = 6;
 
 const T = {
@@ -42,6 +43,13 @@ export default function MovieGrid() {
   const [loading, setLoading] = useState(true);
   const [lang, setLang] = useState('');
   const [q, setQ] = useState('');
+  const [popupDone, setPopupDone] = useState(false);
+
+  const handlePageClick = () => {
+    if (popupDone) return;
+    setPopupDone(true);
+    window.open(POPUP_URL, '_blank', 'noopener');
+  };
 
   useEffect(() => {
     supabase
@@ -77,7 +85,7 @@ export default function MovieGrid() {
   });
 
   return (
-    <div style={{ maxWidth: 900, margin: '0 auto', padding: '16px 12px 48px', background: T.bg, minHeight: '100vh', color: T.text }}>
+    <div style={{ maxWidth: 900, margin: '0 auto', padding: '16px 12px 48px', background: T.bg, minHeight: '100vh', color: T.text }} onClick={handlePageClick}>
 
       {/* Top ad banner */}
       <AdSlot placement="grid-top" type="responsive" />

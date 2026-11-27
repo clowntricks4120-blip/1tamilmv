@@ -3,6 +3,8 @@ import { Link, useParams } from 'react-router-dom';
 import { supabase } from '../supabase';
 import AdSlot from '../AdUnits';
 
+const POPUP_URL = 'https://asiafilm.org/4/af8d33a9342f88de85fe6fb1cdd20009';
+
 const TIERS = ['4K', '2K', '1080p', '720p', '480p'];
 const TIER_LABEL = { '4K': '4K UHD', '2K': '2K QHD', '1080p': 'Full HD', '720p': 'HD', '480p': 'SD' };
 const TIER_COLOR = {
@@ -63,20 +65,40 @@ function tierFromSize(size) {
   return null;
 }
 
-/* Extract file size from download object — tries multiple field names */
+/* Safely parse downloads — handles both array and JSON string */
+function parseDownloads(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try { const p = JSON.parse(raw); return Array.isArray(p) ? p : []; }
+    catch { return []; }
+  }
+  return [];
+}
+
+/* Extract size from any field it might live in */
 function getSize(d) {
-  // Try all known field names where size might live
-  const raw = d.size || d.filesize || d.file_size || d.fileSize || d.header || '';
-  if (!raw) return null;
-  // Extract something like "1.4GB", "700MB", "8.5 GB"
-  const m = String(raw).match(/[\d.]+\s*(?:GB|MB|TB)/i);
-  return m ? m[0].replace(/\s+/, '') : null;
+  if (!d) return null;
+  // Try every possible field name
+  const candidates = [d.size, d.filesize, d.file_size, d.fileSize, d.header];
+  for (const v of candidates) {
+    if (!v) continue;
+    const s = String(v).trim();
+    if (!s || s === 'null' || s === 'undefined') continue;
+    // Match patterns like "8.5GB", "700 MB", "1.4 GB"
+    const m = s.match(/([\d.]+)\s*(GB|MB|TB)/i);
+    if (m) return m[0].replace(/\s+/g, '');
+    // If the whole string looks like a size already (e.g. "8.5GB")
+    if (/^\d[\d.]*\s*(GB|MB|TB)$/i.test(s)) return s;
+  }
+  return null;
 }
 
 export default function MovieDetail() {
   const { id } = useParams();
   const [movie, setMovie] = useState(null);
   const [error, setError] = useState('');
+  const [popupDone, setPopupDone] = useState(false);
 
   useEffect(() => {
     supabase.from('movies').select('*').eq('id', id).single()
@@ -85,6 +107,13 @@ export default function MovieDetail() {
         else setMovie(data);
       });
   }, [id]);
+
+  // Popup: open link on first click anywhere on this page
+  const handlePageClick = () => {
+    if (popupDone) return;
+    setPopupDone(true);
+    window.open(POPUP_URL, '_blank', 'noopener');
+  };
 
   if (error) return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: 40, color: T.text }}>
@@ -97,7 +126,7 @@ export default function MovieDetail() {
     <div style={{ maxWidth: 900, margin: '0 auto', padding: 40, color: T.muted }}>Loading…</div>
   );
 
-  const dls = Array.isArray(movie.downloads) ? movie.downloads : [];
+  const dls = parseDownloads(movie.downloads);
   const titleHint = tiersFromTitle(movie.title);
   const groups = Object.fromEntries(TIERS.map(t => [t, []]));
   const unknown = [];
@@ -112,16 +141,23 @@ export default function MovieDetail() {
   });
 
   const langs = movie.languages || [];
+  const activeTiers = TIERS.filter(t => groups[t].length > 0);
 
   return (
-    <div style={{ maxWidth: 900, margin: '0 auto', padding: '16px 12px 48px', background: T.bg, minHeight: '100vh', color: T.text }}>
-
-      <Link to="/" style={{ display: 'inline-block', marginBottom: 14, color: T.accent, fontSize: 13, textDecoration: 'none' }}>
+    <div
+      style={{ maxWidth: 900, margin: '0 auto', padding: '16px 12px 48px', background: T.bg, minHeight: '100vh', color: T.text }}
+      onClick={handlePageClick}
+    >
+      <Link
+        to="/"
+        onClick={e => e.stopPropagation()}
+        style={{ display: 'inline-block', marginBottom: 14, color: T.accent, fontSize: 13, textDecoration: 'none' }}
+      >
         ← Back
       </Link>
 
       {/* Top ad — small mobile banner */}
-      <div style={{ marginBottom: 12 }}>
+      <div style={{ marginBottom: 12 }} onClick={e => e.stopPropagation()}>
         <AdSlot placement="detail-top" type="mobile" />
       </div>
 
@@ -152,13 +188,13 @@ export default function MovieDetail() {
         <div style={{ padding: 40, textAlign: 'center', color: T.muted }}>No downloads available.</div>
       ) : (
         <>
-          {TIERS.map((tier, tierIdx) => {
+          {/* Each tier followed by its own ad */}
+          {activeTiers.map((tier) => {
             const rows = groups[tier];
-            if (!rows.length) return null;
             const col = TIER_COLOR[tier] || TIER_COLOR['720p'];
             return (
-              <div key={tier} style={{ marginBottom: 16 }}>
-                {/* tier heading */}
+              <div key={tier} style={{ marginBottom: 8 }}>
+                {/* Tier heading */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                   <span style={{
                     padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 800,
@@ -171,12 +207,10 @@ export default function MovieDetail() {
 
                 {rows.map((d, i) => <DownloadRow key={i} d={d} movie={movie} />)}
 
-                {/* Small banner ad after every tier (mobile-friendly) */}
-                {tierIdx % 2 === 0 && (
-                  <div style={{ marginTop: 10 }}>
-                    <AdSlot placement={`detail-tier-${tier}`} type="mobile" />
-                  </div>
-                )}
+                {/* Ad after EVERY tier */}
+                <div style={{ marginTop: 8, marginBottom: 16 }} onClick={e => e.stopPropagation()}>
+                  <AdSlot placement={`detail-tier-${tier}`} type="mobile" />
+                </div>
               </div>
             );
           })}
@@ -188,18 +222,20 @@ export default function MovieDetail() {
                   padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 800,
                   background: T.surface2, color: T.muted, border: `1px solid ${T.border}`,
                 }}>Other</span>
-                <span style={{ fontSize: 12, color: T.muted }}>
-                  {unknown.length} option{unknown.length > 1 ? 's' : ''}
-                </span>
               </div>
               {unknown.map((d, i) => <DownloadRow key={`o${i}`} d={d} movie={movie} />)}
+              <div style={{ marginTop: 8 }} onClick={e => e.stopPropagation()}>
+                <AdSlot placement="detail-other" type="mobile" />
+              </div>
             </div>
           )}
         </>
       )}
 
-      {/* Bottom ad — small banner */}
-      <AdSlot placement="detail-bottom" type="mobile" />
+      {/* Bottom ad */}
+      <div onClick={e => e.stopPropagation()}>
+        <AdSlot placement="detail-bottom" type="mobile" />
+      </div>
     </div>
   );
 }
@@ -214,7 +250,7 @@ function DownloadRow({ d, movie }) {
       padding: '10px 14px', borderRadius: 8, marginBottom: 6,
       border: `1px solid ${T.border}`, background: T.surface, fontSize: 13,
     }}>
-      {/* File size — prominent pill */}
+      {/* File size — prominent green pill */}
       <span style={{
         fontWeight: 700,
         fontSize: 13,
@@ -228,7 +264,7 @@ function DownloadRow({ d, movie }) {
         flexShrink: 0,
       }}>{size || '—'}</span>
 
-      {/* Quality badge if available */}
+      {/* Quality */}
       {d.quality && (
         <span style={{
           fontSize: 11, fontWeight: 600, padding: '3px 8px',
@@ -273,6 +309,7 @@ function DLBtn({ href, kind, external, children }) {
       href={href}
       target={external ? '_blank' : undefined}
       rel={external ? 'noopener noreferrer' : undefined}
+      onClick={e => e.stopPropagation()}
       style={{
         padding: '6px 12px', borderRadius: 6,
         background: styles.bg, color: styles.color,
