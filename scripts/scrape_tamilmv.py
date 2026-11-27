@@ -65,6 +65,25 @@ FORMAT_PATTERNS = [
     ('HD',     r'\b(hdrip|hd)\b'),
 ]
 
+# Codec detection patterns (order matters — most specific first)
+CODEC_PATTERNS = [
+    ('HEVC',  r'\b(hevc|x265|h\.?265)\b'),
+    ('AVC',   r'\b(avc|x264|h\.?264)\b'),
+    ('AV1',   r'\bav1\b'),
+]
+
+# Audio format detection
+AUDIO_PATTERNS = [
+    ('DD+5.1', r'\b(dd\+5\.1|ddp5\.1|e-?ac-?3[^0-9]|eac3|atmos)\b'),
+    ('DD5.1',  r'\b(dd5\.1|ac-?3|dolby digital)\b'),
+    ('DTS',    r'\b(dts-?hd|dts)\b'),
+    ('AAC',    r'\baac\b'),
+    ('MP3',    r'\bmp3\b'),
+]
+
+# Bitrate detection
+BITRATE_RE = re.compile(r'\b(\d+)\s*kbps\b', re.I)
+
 # canonical tier vocabulary
 TIER_CANON = {
     '2160p': '4K', '2160': '4K', '4k': '4K', 'uhd': '4K',
@@ -348,14 +367,11 @@ def _tier_from_size(size_str):
 
 
 def _size_from_anchor(anchor):
-    # 1) size in anchor text itself e.g. "Tamil 1080p 1.4GB" or "1.4GB"
     m = SIZE_RE.search(anchor.get_text(' ', strip=True))
     if m:
         return m.group(1).replace(' ', '').upper()
-
-    # 2) immediate next sibling only (text node or tag right after the magnet link)
     sib = anchor.next_sibling
-    for _ in range(2):
+    for _ in range(3):
         if sib is None:
             break
         text = sib.get_text(' ', strip=True) if hasattr(sib, 'get_text') else str(sib)
@@ -363,32 +379,10 @@ def _size_from_anchor(anchor):
         if m:
             return m.group(1).replace(' ', '').upper()
         sib = getattr(sib, 'next_sibling', None)
-
-    # 3) immediate previous sibling only (size written before the magnet link)
-    sib = anchor.previous_sibling
-    for _ in range(2):
-        if sib is None:
-            break
-        text = sib.get_text(' ', strip=True) if hasattr(sib, 'get_text') else str(sib)
-        # Must be a short text — a real size label, not a container with many sizes
-        if text and len(text) < 30:
-            m = SIZE_RE.search(text)
-            if m:
-                return m.group(1).replace(' ', '').upper()
-        sib = getattr(sib, 'previous_sibling', None)
-
-    # 4) direct parent only — but only if it has ONE size in it
-    parent = anchor.parent
-    if parent and hasattr(parent, 'get_text'):
-        text = parent.get_text(' ', strip=True)
-        matches = SIZE_RE.findall(text)
-        if len(matches) == 1:
-            return matches[0].replace(' ', '').upper()
-
     return ''
 
 
-# ---------- format ----------
+# ---------- format / codec / audio ----------
 
 def detect_format(text):
     t = (text or '').lower()
@@ -396,6 +390,53 @@ def detect_format(text):
         if re.search(pat, t):
             return label
     return 'HD'
+
+
+def detect_codec(text):
+    """Return 'HEVC', 'AVC', 'AV1', or '' from filename/title text."""
+    t = (text or '')
+    for label, pat in CODEC_PATTERNS:
+        if re.search(pat, t, re.I):
+            return label
+    return ''
+
+
+def detect_audio(text):
+    """Return audio format string like 'DD+5.1', 'AAC', etc."""
+    t = (text or '')
+    for label, pat in AUDIO_PATTERNS:
+        if re.search(pat, t, re.I):
+            return label
+    return ''
+
+
+def detect_bitrate(text):
+    """Return bitrate string like '640Kbps', '192Kbps', or ''."""
+    m = BITRATE_RE.search(text or '')
+    if m:
+        return m.group(1) + 'Kbps'
+    return ''
+
+
+def _context_text_for_anchor(anchor, max_up=6):
+    """
+    Collect text from the anchor itself + nearest parent paragraph/div
+    that describes this specific download link. Used for codec/audio extraction.
+    Returns combined text string.
+    """
+    parts = [anchor.get_text(' ', strip=True)]
+    # Also check the parent <p> or sibling text
+    node = anchor
+    for _ in range(max_up):
+        node = node.parent
+        if node is None or not hasattr(node, 'get_text'):
+            break
+        text = node.get_text(' ', strip=True)
+        parts.append(text)
+        # Stop once we have a paragraph with enough info
+        if len(text) > 20:
+            break
+    return ' '.join(parts)
 
 
 # ---------- thread parse ----------
@@ -455,6 +496,31 @@ def extract_downloads(soup):
         if not tier:
             tier = _tier_from_size(size)
 
+        # Get context text for codec/audio/bitrate/size extraction
+        ctx = _context_text_for_anchor(mg)
+
+        # Try to extract size from the torrent filename in the magnet URI first
+        # e.g. dn=...+1080p+HEVC+3GB... is very reliable
+        magnet_dn = ''
+        dn_m = re.search(r'[?&]dn=([^&]+)', href)
+        if dn_m:
+            import urllib.parse
+            magnet_dn = urllib.parse.unquote_plus(dn_m.group(1))
+
+        # Size: magnet filename > anchor text > sibling text
+        size_from_dn = ''
+        if magnet_dn:
+            sm = SIZE_RE.search(magnet_dn)
+            if sm:
+                size_from_dn = sm.group(1).replace(' ', '').upper()
+        size = size_from_dn or size or ''
+
+        # Codec, audio, bitrate — from magnet filename first (most reliable), then ctx
+        search_text = magnet_dn or ctx
+        codec   = detect_codec(search_text)
+        audio   = detect_audio(search_text) or detect_audio(ctx)
+        bitrate = detect_bitrate(search_text) or detect_bitrate(ctx)
+
         fmt = detect_format(' '.join(filter(None, [tier or '', size])))
         quality = tier or ''
 
@@ -483,6 +549,9 @@ def extract_downloads(soup):
             'header':      '',
             'format':      fmt,
             'tier':        tier,
+            'codec':       codec,
+            'audio':       audio,
+            'bitrate':     bitrate,
             'magnet':      href,
             'torrent_url': torrent_url,
             'direct_url':  direct_url,

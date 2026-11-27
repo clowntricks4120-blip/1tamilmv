@@ -233,15 +233,36 @@ export default function MovieDetail() {
             return (
               <div key={tier} style={{ marginBottom: 8 }}>
                 {/* Tier heading */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                  <span style={{
-                    padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 800,
-                    background: col.bg, color: col.fg, border: `1px solid ${col.border}`,
-                  }}>{tier}</span>
-                  <span style={{ fontSize: 12, color: T.muted }}>
-                    {TIER_LABEL[tier]} · {rows.length} option{rows.length > 1 ? 's' : ''}
-                  </span>
-                </div>
+                {(() => {
+                  const tierSizeVal = tierSizeMap[tier] || null;
+                  const tierAudio = rows.find(r => r.audio)?.audio || '';
+                  const tierBitrate = rows.find(r => r.bitrate)?.bitrate || '';
+                  const audioPart = [tierAudio, tierBitrate].filter(Boolean).join(' · ');
+                  return (
+                    <div style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      marginBottom: 8, padding: '8px 14px', borderRadius: 8,
+                      background: col.bg, border: `1px solid ${col.border}`,
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{
+                          padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 800,
+                          background: col.fg + '22', color: col.fg,
+                        }}>{tier}</span>
+                        <span style={{ fontSize: 12, color: col.fg, opacity: 0.8 }}>
+                          {TIER_LABEL[tier]}
+                          {audioPart ? ` · ${audioPart}` : ''}
+                          {` · ${rows.length} option${rows.length > 1 ? 's' : ''}`}
+                        </span>
+                      </div>
+                      {tierSizeVal && (
+                        <span style={{ fontSize: 14, fontWeight: 700, color: col.fg }}>
+                          {tierSizeVal}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {rows.map((d, i) => <DownloadRow key={i} d={d} movie={movie} tierSizeMap={tierSizeMap} />)}
 
@@ -280,51 +301,64 @@ export default function MovieDetail() {
 
 function DownloadRow({ d, movie, tierSizeMap = {} }) {
   const langText = d.langs || (movie.languages || []).join(' + ') || '—';
-  // Priority: real scraped size → parsed from title by tier → nothing
   const tier = normalizeTier(d.tier);
   const size = getSize(d) || (tier && tierSizeMap[tier]) || null;
 
+  // Codec badge
+  const codec = d.codec || '';
+  const codecLabel = codec === 'HEVC' ? 'x265' : codec === 'AVC' ? 'x264' : codec || '';
+
+  // Audio line: "DD+5.1 · 640Kbps" or "AAC" etc.
+  const audioParts = [d.audio, d.bitrate].filter(Boolean);
+  const audioLine = audioParts.join(' · ');
+
   return (
     <div style={{
-      display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center',
       padding: '10px 14px', borderRadius: 8, marginBottom: 6,
       border: `1px solid ${T.border}`, background: T.surface, fontSize: 13,
     }}>
-      {/* File size — prominent green pill */}
-      <span style={{
-        fontWeight: 700,
-        fontSize: 13,
-        color: size ? '#15803d' : T.muted,
-        background: size ? '#dcfce7' : T.surface2,
-        padding: '3px 10px',
-        borderRadius: 20,
-        border: `1px solid ${size ? '#bbf7d0' : T.border}`,
-        minWidth: 54,
-        textAlign: 'center',
-        flexShrink: 0,
-      }}>{size || '—'}</span>
-
-      {/* Quality */}
-      {d.quality && (
+      {/* Row 1: size + codec + audio */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginBottom: 8 }}>
+        {/* File size — prominent green pill */}
         <span style={{
-          fontSize: 11, fontWeight: 600, padding: '3px 8px',
-          borderRadius: 20, background: T.accentBg, color: T.accent,
-          border: `1px solid ${T.accentBdr}`,
-        }}>{d.quality}</span>
-      )}
+          fontWeight: 700, fontSize: 13,
+          color: size ? '#15803d' : T.muted,
+          background: size ? '#dcfce7' : T.surface2,
+          padding: '3px 10px', borderRadius: 20,
+          border: `1px solid ${size ? '#bbf7d0' : T.border}`,
+          minWidth: 54, textAlign: 'center', flexShrink: 0,
+        }}>{size || '—'}</span>
 
-      {/* Audio/language */}
-      <span style={{ flex: 1, minWidth: 100, color: T.text, fontSize: 12 }}>
-        <span style={{ color: T.muted, marginRight: 4 }}>🔊</span>
-        {langText}
-      </span>
+        {/* Codec badge */}
+        {codecLabel && (
+          <span style={{
+            fontSize: 11, fontWeight: 600, padding: '3px 8px',
+            borderRadius: 20, background: T.accentBg, color: T.accent,
+            border: `1px solid ${T.accentBdr}`,
+          }}>{codecLabel}</span>
+        )}
 
-      {/* Download buttons */}
-      <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {/* Audio info */}
+        {audioLine && (
+          <span style={{ fontSize: 11, color: T.muted, fontWeight: 500 }}>
+            🔊 {audioLine}
+          </span>
+        )}
+
+        {/* Language if no audio line */}
+        {!audioLine && (
+          <span style={{ fontSize: 11, color: T.muted }}>
+            🔊 {langText}
+          </span>
+        )}
+      </div>
+
+      {/* Row 2: download buttons */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {d.magnet      && <DLBtn href={d.magnet}      kind="magnet">MAGNET</DLBtn>}
         {d.torrent_url && <DLBtn href={d.torrent_url} kind="torrent">.TORRENT</DLBtn>}
         {d.direct_url  && <DLBtn href={d.direct_url}  kind="direct" external>DIRECT</DLBtn>}
-      </span>
+      </div>
     </div>
   );
 }
