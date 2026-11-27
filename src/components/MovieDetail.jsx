@@ -76,26 +76,57 @@ function parseDownloads(raw) {
   return [];
 }
 
-/* Extract size from d.size field, fallback to tier-based estimate */
+/* Extract size from d.size field */
 function getSize(d) {
   if (!d) return null;
-  // Try real size field first
   const v = d.size;
-  if (v) {
-    const s = String(v).trim();
-    if (s && s !== '' && s !== 'null' && s !== 'undefined') {
-      const m = s.match(/([\d]+(?:\.\d+)?)\s*(GB|MB|TB)/i);
-      if (m) return m[1] + m[2].toUpperCase();
+  if (!v) return null;
+  const s = String(v).trim();
+  if (!s || s === 'null' || s === 'undefined') return null;
+  const m = s.match(/([\d]+(?:\.\d+)?)\s*(GB|MB|TB)/i);
+  if (m) return m[1] + m[2].toUpperCase();
+  return null;
+}
+
+/* Parse all sizes from movie title and assign to tiers in order.
+   e.g. "[1080p & 720p - 2.4GB & 1.4GB | 480p - 450MB]"
+   Strategy: find all tier tokens and all size tokens in title order,
+   then zip them together positionally. */
+function buildTierSizeMap(title) {
+  if (!title) return {};
+  const map = {};
+
+  // Pattern 1: explicit "TIER ... SIZEgb" pairs close together
+  // e.g. "1080p - 2.4GB", "720p - 1.4GB", "450MB" (no tier = 480p fallback)
+  const TIER_RE = /\b(2160p|4k|uhd|1440p|2k|1080p|720p|480p|360p)\b/gi;
+  const SIZE_RE_G = /\b(\d+(?:\.\d+)?)\s*(GB|MB|TB)\b/gi;
+
+  const tiers = [], sizes = [];
+  let m;
+  while ((m = TIER_RE.exec(title)) !== null)  tiers.push({ val: m[0].toUpperCase(), idx: m.index });
+  while ((m = SIZE_RE_G.exec(title)) !== null) sizes.push({ val: m[1] + m[2].toUpperCase(), idx: m.index });
+
+  if (!tiers.length || !sizes.length) return map;
+
+  // For each size, find the nearest tier before it
+  for (const sz of sizes) {
+    // find last tier that appears before this size
+    const before = tiers.filter(t => t.idx < sz.idx);
+    if (before.length) {
+      const nearest = before[before.length - 1];
+      const canon = normalizeTier(nearest.val);
+      if (canon && !map[canon]) map[canon] = sz.val;
     }
   }
-  // Fallback: estimate from tier
-  const tier = (d.tier || '').trim();
-  if (tier === '4K')    return '~15–25GB';
-  if (tier === '2K')    return '~8–12GB';
-  if (tier === '1080p') return '~1.5–4GB';
-  if (tier === '720p')  return '~700–1.4GB';
-  if (tier === '480p')  return '~300–700MB';
-  return null;
+
+  // If sizes > assigned tiers, zip remaining sizes to remaining tiers positionally
+  const assignedTiers = new Set(Object.keys(map));
+  const unassignedTiers = tiers.map(t => normalizeTier(t.val)).filter(t => t && !assignedTiers.has(t));
+  const assignedSizes = new Set(Object.values(map));
+  const unassignedSizes = sizes.map(s => s.val).filter(s => !assignedSizes.has(s));
+  unassignedTiers.forEach((t, i) => { if (unassignedSizes[i] && !map[t]) map[t] = unassignedSizes[i]; });
+
+  return map;
 }
 
 export default function MovieDetail() {
@@ -131,7 +162,8 @@ export default function MovieDetail() {
   );
 
   const dls = parseDownloads(movie.downloads);
-const titleHint = tiersFromTitle(movie.title);
+  const tierSizeMap = buildTierSizeMap(movie.title);
+  const titleHint = tiersFromTitle(movie.title);
   const groups = Object.fromEntries(TIERS.map(t => [t, []]));
   const unknown = [];
 
@@ -209,7 +241,7 @@ const titleHint = tiersFromTitle(movie.title);
                   </span>
                 </div>
 
-                {rows.map((d, i) => <DownloadRow key={i} d={d} movie={movie} />)}
+                {rows.map((d, i) => <DownloadRow key={i} d={d} movie={movie} tierSizeMap={tierSizeMap} />)}
 
                 {/* Ad after EVERY tier */}
                 <div style={{ marginTop: 8, marginBottom: 16 }} onClick={e => e.stopPropagation()}>
@@ -227,7 +259,7 @@ const titleHint = tiersFromTitle(movie.title);
                   background: T.surface2, color: T.muted, border: `1px solid ${T.border}`,
                 }}>Other</span>
               </div>
-              {unknown.map((d, i) => <DownloadRow key={`o${i}`} d={d} movie={movie} />)}
+              {unknown.map((d, i) => <DownloadRow key={`o${i}`} d={d} movie={movie} tierSizeMap={tierSizeMap} />)}
               <div style={{ marginTop: 8 }} onClick={e => e.stopPropagation()}>
                 <AdSlot placement="detail-other" type="mobile" />
               </div>
@@ -244,9 +276,11 @@ const titleHint = tiersFromTitle(movie.title);
   );
 }
 
-function DownloadRow({ d, movie }) {
+function DownloadRow({ d, movie, tierSizeMap = {} }) {
   const langText = d.langs || (movie.languages || []).join(' + ') || '—';
-  const size = getSize(d);
+  // Priority: real scraped size → parsed from title by tier → nothing
+  const tier = normalizeTier(d.tier);
+  const size = getSize(d) || (tier && tierSizeMap[tier]) || null;
 
   return (
     <div style={{
