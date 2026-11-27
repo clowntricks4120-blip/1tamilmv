@@ -264,7 +264,7 @@ export default function MovieDetail() {
                   );
                 })()}
 
-                {rows.map((d, i) => <DownloadRow key={i} d={d} movie={movie} tierSizeMap={tierSizeMap} />)}
+                {rows.map((d, i) => <DownloadRow key={i} d={d} movie={movie} />)}
 
                 {/* Ad after EVERY tier */}
                 <div style={{ marginTop: 8, marginBottom: 16 }} onClick={e => e.stopPropagation()}>
@@ -282,7 +282,7 @@ export default function MovieDetail() {
                   background: T.surface2, color: T.muted, border: `1px solid ${T.border}`,
                 }}>Other</span>
               </div>
-              {unknown.map((d, i) => <DownloadRow key={`o${i}`} d={d} movie={movie} tierSizeMap={tierSizeMap} />)}
+              {unknown.map((d, i) => <DownloadRow key={`o${i}`} d={d} movie={movie} />)}
               <div style={{ marginTop: 8 }} onClick={e => e.stopPropagation()}>
                 <AdSlot placement="detail-other" type="mobile" />
               </div>
@@ -299,10 +299,11 @@ export default function MovieDetail() {
   );
 }
 
-function DownloadRow({ d, movie, tierSizeMap = {} }) {
+function DownloadRow({ d, movie }) {
   const langText = d.langs || (movie.languages || []).join(' + ') || '—';
-  const tier = normalizeTier(d.tier);
-  const size = getSize(d) || (tier && tierSizeMap[tier]) || null;
+  // Only use d.size — after FORCE_RESCAN each download has its own scraped size
+  // from the magnet filename. Never fall back to tier-level size (causes duplicates).
+  const size = getSize(d) || null;
 
   // Codec badge
   const codec = d.codec || '';
