@@ -521,11 +521,20 @@ def parse_thread(tid, url, html, origin):
 
     poster = find_poster(soup, origin)
     downloads = extract_downloads(soup)
-    blob = ' '.join(
-        (str(d.get('langs') or '') + ' ' + str(d.get('header') or ''))
-        for d in downloads
-    )
-    langs = normalize_langs(blob) or normalize_langs(title)
+    # Build movie-level languages from per-download langs only (already heading-parsed)
+    # Using a set so we don't double-count Tamil if it appears in multiple downloads
+    all_langs: set = set()
+    for d in downloads:
+        for lang in re.split(r'\s*\+\s*|\s*,\s*', str(d.get('langs') or '')):
+            lang = lang.strip()
+            if lang:
+                all_langs.add(lang)
+    # If still empty, try parsing from title (but only the bracket part, not full title)
+    if not all_langs:
+        bracket_m = re.search(r'\[([^\]]*(?:Hindi|Tamil|Telugu|Malayalam|Kannada|English)[^\]]*)\]', title or '', re.I)
+        if bracket_m:
+            all_langs = set(normalize_langs(bracket_m.group(1)))
+    langs = sorted(all_langs) if all_langs else normalize_langs(title)
 
     return {
         'topic_id':   tid,
@@ -596,6 +605,24 @@ def extract_downloads(soup):
         codec   = detect_codec(search_text) or detect_codec(ctx)
         audio   = detect_audio(search_text) or detect_audio(ctx)
         bitrate = detect_bitrate(search_text) or detect_bitrate(ctx)
+
+        # Languages — parse ONLY from heading text bracket e.g. [Hindi + Malayalam + Kannada]
+        # heading_text is reliable; _langs_from_anchor walks up and can pick up site-level "Tamil"
+        langs_from_heading = ''
+        if heading_text:
+            # Look for bracketed language group: [Hindi + Malayalam + Kannada]
+            bracket_m = re.search(r'\[([^\]]*(?:Hindi|Tamil|Telugu|Malayalam|Kannada|English|Korean|Japanese|Chinese)[^\]]*)\]', heading_text, re.I)
+            if bracket_m:
+                langs_from_heading = normalize_langs(bracket_m.group(1))
+                langs_from_heading = ' + '.join(langs_from_heading) if langs_from_heading else ''
+        # Also try magnet dn= for language bracket
+        if not langs_from_heading and magnet_dn:
+            bracket_m = re.search(r'\[([^\]]*(?:Hindi|Tamil|Telugu|Malayalam|Kannada|English)[^\]]*)\]', magnet_dn, re.I)
+            if bracket_m:
+                lf = normalize_langs(bracket_m.group(1))
+                langs_from_heading = ' + '.join(lf) if lf else ''
+        # Fall back to old anchor walker only if heading gave nothing
+        langs = langs_from_heading or _langs_from_anchor(mg)
 
         fmt = detect_format(' '.join(filter(None, [tier or '', size])))
         quality = tier or ''

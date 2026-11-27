@@ -365,11 +365,11 @@ function DownloadRow({ d, movie, sizeHint, accentBar, isLast }) {
       </div>
 
       {/* Line 2: audio/lang info ←→ buttons */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingLeft: 6 }}>
-        <span style={{ fontSize: 11, color: T.faint, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, paddingLeft: 6, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: T.faint, flex: 1, minWidth: 0, lineHeight: 1.5 }}>
           {subLine || ' '}
         </span>
-        <div style={{ display: 'flex', gap: 5, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', gap: 5, flexShrink: 0, alignSelf: 'flex-end' }} onClick={e => e.stopPropagation()}>
           {d.magnet      && <DLBtn href={d.magnet}      kind="magnet">Magnet</DLBtn>}
           {d.torrent_url && <DLBtn href={d.torrent_url} kind="torrent">Torrent</DLBtn>}
           {d.direct_url  && <DLBtn href={d.direct_url}  kind="direct" external>Direct</DLBtn>}
