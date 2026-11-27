@@ -348,14 +348,14 @@ def _tier_from_size(size_str):
 
 
 def _size_from_anchor(anchor):
-    # 1) size in anchor text itself e.g. "Tamil 1080p 1.4GB"
+    # 1) size in anchor text itself e.g. "Tamil 1080p 1.4GB" or "1.4GB"
     m = SIZE_RE.search(anchor.get_text(' ', strip=True))
     if m:
         return m.group(1).replace(' ', '').upper()
 
-    # 2) next siblings (up to 5)
+    # 2) immediate next sibling only (text node or tag right after the magnet link)
     sib = anchor.next_sibling
-    for _ in range(5):
+    for _ in range(2):
         if sib is None:
             break
         text = sib.get_text(' ', strip=True) if hasattr(sib, 'get_text') else str(sib)
@@ -364,27 +364,26 @@ def _size_from_anchor(anchor):
             return m.group(1).replace(' ', '').upper()
         sib = getattr(sib, 'next_sibling', None)
 
-    # 3) previous siblings (size label before magnet link)
+    # 3) immediate previous sibling only (size written before the magnet link)
     sib = anchor.previous_sibling
-    for _ in range(5):
+    for _ in range(2):
         if sib is None:
             break
         text = sib.get_text(' ', strip=True) if hasattr(sib, 'get_text') else str(sib)
-        m = SIZE_RE.search(text or '')
-        if m:
-            return m.group(1).replace(' ', '').upper()
+        # Must be a short text — a real size label, not a container with many sizes
+        if text and len(text) < 30:
+            m = SIZE_RE.search(text)
+            if m:
+                return m.group(1).replace(' ', '').upper()
         sib = getattr(sib, 'previous_sibling', None)
 
-    # 4) walk UP to parent/grandparent and search their full text
-    node = anchor
-    for _ in range(5):
-        node = node.parent
-        if node is None or not hasattr(node, 'get_text'):
-            break
-        text = node.get_text(' ', strip=True)
-        m = SIZE_RE.search(text or '')
-        if m:
-            return m.group(1).replace(' ', '').upper()
+    # 4) direct parent only — but only if it has ONE size in it
+    parent = anchor.parent
+    if parent and hasattr(parent, 'get_text'):
+        text = parent.get_text(' ', strip=True)
+        matches = SIZE_RE.findall(text)
+        if len(matches) == 1:
+            return matches[0].replace(' ', '').upper()
 
     return ''
 
